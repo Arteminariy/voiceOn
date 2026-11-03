@@ -224,16 +224,24 @@ pub fn desktop_entry(exe: &Path, args: &str) -> String {
 #[cfg(target_os = "linux")]
 fn refresh_menu(apps: &Path) {
     use std::process::{Command, Stdio};
-    let apps = apps.to_path_buf();
     // Обновление кэшей меню — по желанию: если утилит нет или они упали, не важно.
-    let _ = std::thread::Builder::new().name("voiceon-menu".into()).spawn(move || {
-        for (cmd, args) in [("update-desktop-database", vec![apps.into_os_string()]), ("kbuildsycoca6", vec![])] {
-            let _ = Command::new(cmd)
-                .args(args)
+    // Запускаем сразу (процесс после установки тут же выходит, а дети доработают сами),
+    // ждём их в отдельном потоке, чтобы не копить зомби в работающей копии.
+    let children: Vec<_> = [("update-desktop-database", Some(apps)), ("kbuildsycoca6", None)]
+        .into_iter()
+        .filter_map(|(cmd, arg)| {
+            Command::new(cmd)
+                .args(arg)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status();
+                .spawn()
+                .ok()
+        })
+        .collect();
+    let _ = std::thread::Builder::new().name("voiceon-menu".into()).spawn(move || {
+        for mut c in children {
+            let _ = c.wait();
         }
     });
 }
