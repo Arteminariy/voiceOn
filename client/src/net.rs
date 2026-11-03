@@ -231,10 +231,15 @@ pub fn spawn(link: Arc<Link>, shared: Arc<Shared>, nick: String) -> JoinHandle<(
 fn set_status(shared: &Shared, status: Status, session: u32) {
     let mut st = shared.state.lock().unwrap();
     if st.status != status || st.my_session != session {
+        crate::log::info(&format!("статус {:?} -> {status:?}, сессия {session}", st.status));
         st.status = status;
         st.my_session = session;
         if status != Status::Connected {
             st.rtt_ms = None;
+        }
+        if status == Status::Reconnecting {
+            // Старый список содержал бы нашу прежнюю сессию как чужого участника.
+            st.roster.clear();
         }
         drop(st);
         (shared.repaint)();
@@ -252,17 +257,23 @@ fn run(link: Arc<Link>, shared: Arc<Shared>, nick: String) {
     let mut replay: HashMap<u32, (ReplayWindow, Instant)> = HashMap::new();
     let mut buf = [0u8; MAX_PACKET];
 
+    crate::log::info(&format!("подключение к {} как {nick}", link.server));
     set_status(&shared, Status::Connecting, link.session_id());
 
     while !shared.stop.load(Ordering::Relaxed) {
         let now = Instant::now();
 
         if link.socket_broken.swap(false, Ordering::Relaxed) {
+            crate::log::info("ошибка отправки — пересоздаю сокет");
             link.replace_socket();
         }
 
         // Долго нет ответа сервера — новая сессия.
         if now.duration_since(last_pong) > RECONNECT_AFTER {
+            crate::log::info(&format!(
+                "нет ответа сервера {} с — новая сессия",
+                now.duration_since(last_pong).as_secs()
+            ));
             link.bye();
             link.renew();
             welcomed = false;
@@ -299,6 +310,12 @@ fn run(link: Arc<Link>, shared: Arc<Shared>, nick: String) {
             replay.retain(|_, (_, t)| now.duration_since(*t) < Duration::from_secs(60));
             let roster: Vec<u32> =
                 shared.state.lock().unwrap().roster.iter().map(|e| e.session_id).collect();
+            shared
+                .state
+                .lock()
+                .unwrap()
+                .last_voice
+                .retain(|_, t| now.duration_since(*t) < Duration::from_secs(60));
             shared.jitter.lock().unwrap().retain(|sid, jb| {
                 roster.contains(sid) || now.duration_since(jb.last_arrival) < Duration::from_secs(10)
             });
@@ -348,6 +365,7 @@ fn run(link: Arc<Link>, shared: Arc<Shared>, nick: String) {
                 }
             }
             Kind::Rejoin => {
+                crate::log::info("сервер не знает сессию (Rejoin)");
                 welcomed = false;
                 last_hello = now - HELLO_RETRY;
             }

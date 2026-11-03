@@ -1,0 +1,9 @@
+[package]
+name = "voiceon-release"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+getrandom = "0.2"

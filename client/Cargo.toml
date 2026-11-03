@@ -14,3 +14,8 @@ cpal = "0.18"
 nnnoiseless = "0.5"
 ringbuf = "0.4"
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11", "clipboard"] }
+ureq = "3"
+serde_json = "1"
+sha2 = "0.10"
+ed25519-dalek = "2"
+self-replace = "1"

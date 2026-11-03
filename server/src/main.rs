@@ -125,6 +125,19 @@ impl Server {
         let nick = truncate_nick(&String::from_utf8_lossy(payload)).to_string();
         let is_new = !self.peers.contains_key(&h.session_id);
         if is_new {
+            // Переподключение того же клиента: новая сессия с того же IP с тем же ником
+            // вытесняет старую, иначе она висела бы «призраком» до таймаута.
+            let stale: Vec<u32> = self
+                .peers
+                .iter()
+                .filter(|(_, p)| p.addr.ip() == from.ip() && p.nick == nick && p.room_id == h.room_id)
+                .map(|(&sid, _)| sid)
+                .collect();
+            for sid in stale {
+                if let Some(p) = self.peers.remove(&sid) {
+                    eprintln!("[{sid}] {} заменён новой сессией", p.nick);
+                }
+            }
             if self.peers.len() >= MAX_PEERS {
                 return;
             }

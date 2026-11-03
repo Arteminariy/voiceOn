@@ -7,10 +7,12 @@ mod capture;
 mod config;
 mod dsp;
 mod jitter;
+mod log;
 mod mixer;
 mod net;
 mod session;
 mod ui;
+mod update;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
