@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Окно до первого кадра Compose: фон по теме системы (values-night — тёмный). -->
+    <style name="Theme.VoiceOn" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+    <color name="bg">#F6F7F9</color>
+    <color name="accent">#1F9D57</color>
+    <color name="icon_bg">#15171B</color>
+</resources>
