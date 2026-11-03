@@ -77,6 +77,7 @@ pub struct VoiceApp {
 impl VoiceApp {
     pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> VoiceApp {
         theme::install(&cc.egui_ctx);
+        crate::single_instance::serve(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
         let update = crate::update::spawn(move || ctx.request_repaint());
         let tray = match crate::tray::Tray::spawn(&cc.egui_ctx) {
@@ -680,6 +681,9 @@ impl eframe::App for VoiceApp {
             self.hidden_pos = None; // окно ещё не расставлено — при показе место выберет оконный менеджер
         }
         self.handle_tray(ctx);
+        if crate::single_instance::take_show_request() {
+            self.show(ctx);
+        }
         self.restore_position(ctx);
         // Крестик прячет окно в трей, звонок продолжается; «Выход» в трее закрывает по-настоящему.
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.tray_usable() {

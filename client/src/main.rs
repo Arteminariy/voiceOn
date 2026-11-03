@@ -13,6 +13,7 @@ mod log;
 mod mixer;
 mod net;
 mod session;
+mod single_instance;
 mod tray;
 mod ui;
 mod update;
@@ -35,6 +36,11 @@ fn main() {
         install::Outcome::Relaunched => return,
         install::Outcome::Continue(err) => err,
     };
+
+    // Вторая копия только просит первую показать окно и выходит.
+    if let single_instance::Acquire::AlreadyRunning = single_instance::acquire() {
+        return;
+    }
 
     // Linux: winit под Wayland не умеет ни прятать окно, ни поднимать его обратно
     // (set_visible и focus_window там пустые), поэтому для сворачивания в трей
