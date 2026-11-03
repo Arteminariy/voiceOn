@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["proto", "server", "core", "client", "tools"]
+members = ["proto", "server", "core", "client", "ffi", "ffi/bindgen", "tools"]
 
 [workspace.package]
 version = "0.3.0"

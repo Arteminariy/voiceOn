@@ -1,0 +1,15 @@
+[package]
+name = "voiceon-ffi"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Обёртка ядра для Android: UniFFI-биндинги на Kotlin, libvoiceon_ffi.so.
+[lib]
+name = "voiceon_ffi"
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+voiceon-core = { path = "../core" }
+voiceon-proto = { path = "../proto" }
+uniffi = "0.32.2"

@@ -1,0 +1,13 @@
+[package]
+name = "voiceon-uniffi-bindgen"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# Генератор Kotlin-биндингов UniFFI (зовётся из Gradle-задачи uniffiKotlin).
+[[bin]]
+name = "uniffi-bindgen"
+path = "main.rs"
+
+[dependencies]
+uniffi = { version = "0.32.2", features = ["cli"] }
