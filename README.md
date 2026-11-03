@@ -75,6 +75,17 @@ curl -fsSL https://raw.githubusercontent.com/Arteminariy/voiceOn/main/deploy/ins
 Порт по умолчанию — UDP 47800 (`VOICEON_PORT=… sh` чтобы сменить); если включён `ufw`,
 скрипт откроет порт сам, у хостера с внешним фаерволом открой его в панели.
 
+Если по пути (например, на выходе из РФ) режется «неизвестный» UDP, проверь, какие порты
+доходят (`tcpdump -ni any udp and src host <твой IP>` на сервере), и перенеси сервер на
+проходящий — часто это UDP 123:
+
+```sh
+sed -i 's/:[0-9]*"$/:123"/' /etc/voiceon/server.toml
+curl -fsSL https://raw.githubusercontent.com/Arteminariy/voiceOn/main/deploy/install.sh | sh
+```
+
+В клиенте тогда сервер указывается как `host:123`.
+
 Вручную:
 
 ```sh
