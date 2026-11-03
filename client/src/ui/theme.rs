@@ -112,6 +112,15 @@ pub fn semibold_family() -> FontFamily {
     FontFamily::Name("InterSemiBold".into())
 }
 
+fn icon_family() -> FontFamily {
+    FontFamily::Name("icons".into())
+}
+
+/// Шрифт иконок Phosphor; строки-иконки (`egui_phosphor::regular::*`) рисуем только им.
+pub fn icon_font(size: f32) -> FontId {
+    FontId::new(size, icon_family())
+}
+
 pub fn semibold(size: f32) -> FontId {
     FontId::new(size, semibold_family())
 }
@@ -129,14 +138,17 @@ fn install_fonts(ctx: &egui::Context) {
         FontData::from_static(egui_phosphor::Variant::Regular.font_bytes()).into(),
     );
 
-    // Inter первым, иконки вторыми, дальше встроенные шрифты egui как запас для редких символов.
+    // Inter первым, дальше встроенные шрифты egui как запас для редких символов. Иконки — в отдельном
+    // семействе: в Inter те же кодовые точки приватной области заняты своими глифами (стрелки и т.п.),
+    // а у Phosphor буквы a-z пустые, так что смешивать их в одном семействе нельзя.
     let fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    let mut prop = vec!["Inter".to_string(), "phosphor".to_string()];
+    let mut prop = vec!["Inter".to_string()];
     prop.extend(fallback.iter().cloned());
-    let mut semi = vec!["InterSemiBold".to_string(), "Inter".to_string(), "phosphor".to_string()];
+    let mut semi = vec!["InterSemiBold".to_string(), "Inter".to_string()];
     semi.extend(fallback);
     fonts.families.insert(FontFamily::Proportional, prop);
     fonts.families.insert(semibold_family(), semi);
+    fonts.families.insert(icon_family(), vec!["phosphor".to_string()]);
     ctx.set_fonts(fonts);
 }
 

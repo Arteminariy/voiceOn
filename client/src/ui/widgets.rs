@@ -1,8 +1,8 @@
 //! Самодельные виджеты по макету: аватар, круглые кнопки, слайдер, переключатель, полосы.
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, vec2};
 
-use super::theme::{Palette, semibold};
+use super::theme::{self, Palette, semibold};
 
 /// Детерминированный цвет аватара по хешу ника (FNV-1a).
 pub fn avatar_color(nick: &str, pal: &Palette) -> Color32 {
@@ -38,7 +38,7 @@ pub fn round_button(ui: &mut Ui, icon: &str, fill: Color32, fg: Color32, tip: &s
         fill
     };
     ui.painter().circle_filled(rect.center(), 26.0, fill);
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(22.0), fg);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, theme::icon_font(22.0), fg);
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -57,7 +57,7 @@ pub fn icon_button(ui: &mut Ui, icon: &str, size: f32, color: Color32, tip: &str
         ui.painter().rect_filled(rect, CornerRadius::same(10), ui.visuals().widgets.hovered.weak_bg_fill);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, FontId::proportional(20.0), color);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, theme::icon_font(20.0), color);
     resp.on_hover_text(tip)
 }
 
@@ -72,7 +72,13 @@ pub fn primary_button(ui: &mut Ui, icon: &str, text: &str, pal: &Palette) -> Res
         pal.accent
     };
     ui.painter().rect_filled(rect, CornerRadius::same(12), fill);
-    ui.painter().text(rect.center(), Align2::CENTER_CENTER, format!("{icon}  {text}"), semibold(15.0), pal.on_accent);
+    // Иконка и текст — разными шрифтами, поэтому два galley рядом.
+    let ig = ui.painter().layout_no_wrap(icon.to_string(), theme::icon_font(18.0), pal.on_accent);
+    let tg = ui.painter().layout_no_wrap(text.to_string(), semibold(15.0), pal.on_accent);
+    let gap = 8.0;
+    let x0 = rect.center().x - (ig.size().x + gap + tg.size().x) / 2.0;
+    ui.painter().galley(Pos2::new(x0, rect.center().y - ig.size().y / 2.0), ig.clone(), pal.on_accent);
+    ui.painter().galley(Pos2::new(x0 + ig.size().x + gap, rect.center().y - tg.size().y / 2.0), tg, pal.on_accent);
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }

@@ -73,10 +73,10 @@ impl VoiceApp {
 
     fn login_screen(&mut self, ui: &mut Ui) {
         let p = pal(ui);
-        egui::Panel::bottom("login_footer").show_separator_line(false).frame(Frame::NONE.inner_margin(Margin::symmetric(0, 10))).show(ui, |ui| {
+        egui::Panel::bottom("login_footer").show_separator_line(false).frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(0, 10))).show(ui, |ui| {
             ui.vertical_centered(|ui| version_label(ui, &p, "v"));
         });
-        egui::CentralPanel::default().frame(Frame::NONE.inner_margin(Margin::symmetric(24, 16))).show(ui, |ui| {
+        egui::CentralPanel::default().frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(24, 16))).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 16.0;
                 ui.horizontal(|ui| {
@@ -169,7 +169,7 @@ impl VoiceApp {
                         c.mic_muted.store(mic_muted, Ordering::Relaxed);
                     }
                     let (fill, fg) = if deaf { (p.round_btn_muted, p.danger) } else { (p.round_btn, p.text) };
-                    let (icon, tip) = if deaf { (ph::SPEAKER_SLASH, "Включить звук") } else { (ph::HEADPHONES, "Выключить звук") };
+                    let (icon, tip) = if deaf { (ph::SPEAKER_SLASH, "Включить звук") } else { (ph::SPEAKER_HIGH, "Выключить звук") };
                     if widgets::round_button(ui, icon, fill, fg, tip).clicked() {
                         deaf = !deaf;
                         c.deafened.store(deaf, Ordering::Relaxed);
@@ -227,7 +227,7 @@ impl VoiceApp {
                     } else {
                         (ph::MICROPHONE, p.muted)
                     };
-                    ui.label(RichText::new(icon).size(18.0).color(col));
+                    ui.label(RichText::new(icon).font(theme::icon_font(18.0)).color(col));
                 });
 
                 if peers.is_empty() {
@@ -245,7 +245,7 @@ impl VoiceApp {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
                                 let icon = if *vol <= 0.0 { ph::SPEAKER_SLASH } else { ph::SPEAKER_HIGH };
-                                ui.label(RichText::new(icon).size(14.0).color(p.muted));
+                                ui.label(RichText::new(icon).font(theme::icon_font(14.0)).color(p.muted));
                                 let mut v = *vol;
                                 let sw = (ui.available_width() - 40.0 - 8.0).max(30.0);
                                 if widgets::volume_slider(ui, sw, &mut v, &p) {
@@ -293,7 +293,7 @@ impl VoiceApp {
                     ui.label(RichText::new("Настройки").font(semibold(16.0)));
                 });
             });
-        egui::Panel::bottom("settings_footer").show_separator_line(false).frame(Frame::NONE.inner_margin(Margin::symmetric(0, 10))).show(ui, |ui| {
+        egui::Panel::bottom("settings_footer").show_separator_line(false).frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(0, 10))).show(ui, |ui| {
             ui.vertical_centered(|ui| version_label(ui, &p, "voiceOn v"));
         });
 
@@ -302,7 +302,7 @@ impl VoiceApp {
         let dt = ui.input(|i| i.stable_dt).min(0.1);
         self.vad_peak = prob.max(self.vad_peak - dt * 0.6);
 
-        egui::CentralPanel::default().frame(Frame::NONE.inner_margin(Margin::symmetric(16, 16))).show(ui, |ui| {
+        egui::CentralPanel::default().frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(16, 16))).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 20.0;
                 ui.add_enabled_ui(!in_call, |ui| {
@@ -395,7 +395,7 @@ fn error_box(ui: &mut Ui, p: &Palette, text: &str) {
     Frame::NONE.fill(p.err_bg).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(12)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal_top(|ui| {
-            ui.label(RichText::new(ph::WARNING_CIRCLE).size(18.0).color(p.err_text));
+            ui.label(RichText::new(ph::WARNING_CIRCLE).font(theme::icon_font(18.0)).color(p.err_text));
             ui.add(egui::Label::new(RichText::new(text).size(13.0).color(p.err_text)).wrap());
         });
     });
