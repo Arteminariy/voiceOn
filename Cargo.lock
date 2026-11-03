@@ -4379,7 +4379,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "voiceon"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cpal",
  "dirs",
@@ -4403,7 +4403,7 @@ dependencies = [
 
 [[package]]
 name = "voiceon-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
@@ -4415,7 +4415,7 @@ dependencies = [
 
 [[package]]
 name = "voiceon-ffi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "uniffi",
  "voiceon-core",
@@ -4424,7 +4424,7 @@ dependencies = [
 
 [[package]]
 name = "voiceon-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -4432,7 +4432,7 @@ dependencies = [
 
 [[package]]
 name = "voiceon-release"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
@@ -4440,7 +4440,7 @@ dependencies = [
 
 [[package]]
 name = "voiceon-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "getrandom 0.2.17",
  "serde",
@@ -4450,7 +4450,7 @@ dependencies = [
 
 [[package]]
 name = "voiceon-uniffi-bindgen"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "uniffi",
 ]
