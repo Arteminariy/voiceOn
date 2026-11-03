@@ -10,7 +10,7 @@
 //! `push_capture`) — не звать из главного потока.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -26,6 +26,10 @@ uniffi::setup_scaffolding!();
 const BITRATE: i32 = 32_000;
 const FEC_LOSS_PERC: i32 = 10;
 const STATS_EVERY: Duration = Duration::from_secs(5);
+/// Кадр микрофона тише этого пика (≈ −66 dBFS, 16 младших разрядов PCM16) считаем тишиной.
+/// RNNoise оценивает форму спектра, а не громкость, и на почти цифровой тишине после
+/// аппаратного шумодава телефона (и в эмуляторе) уверенно видит речь — гейт бы не закрывался.
+const SILENCE_PEAK: f32 = 0.0005;
 
 /// Ошибка для Kotlin: `VoiceException.Failed`, текст — в `message`.
 #[derive(Debug, uniffi::Error)]
@@ -123,6 +127,8 @@ pub struct VoiceSession {
     playback: Mutex<Playback>,
     test_tone: bool,
     captured_frames: AtomicU64,
+    /// Пик входа микрофона (|сэмпл|, 0..1) с прошлого отчёта, в битах f32.
+    capture_peak: AtomicU32,
 }
 
 #[uniffi::export]
@@ -169,6 +175,7 @@ impl VoiceSession {
             }),
             test_tone: config.test_tone,
             captured_frames: AtomicU64::new(0),
+            capture_peak: AtomicU32::new(0),
         }))
     }
 
@@ -192,6 +199,13 @@ impl VoiceSession {
             }
         } else {
             c.buf.extend(pcm.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0));
+        }
+        let peak = c.buf.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        if peak > f32::from_bits(self.capture_peak.load(Ordering::Relaxed)) {
+            self.capture_peak.store(peak.to_bits(), Ordering::Relaxed);
+        }
+        if !self.test_tone && peak < SILENCE_PEAK {
+            c.buf.fill(0.0);
         }
         let Capture { tx, buf, .. } = c;
         tx.push(buf);
@@ -293,7 +307,7 @@ impl VoiceSession {
         let st = self.shared.state.lock().unwrap();
         let roster: Vec<&str> = st.roster.iter().map(|e| e.nick.as_str()).collect();
         voiceon_core::log::info(&format!(
-            "статистика: статус={:?} rtt={} потери={:.0}% участники={roster:?} воспроизведение {:.0} к/с, со звуком {}/{}, пик {:.2}; захват {:.0} к/с; пакетов отправлено {}, принято {}",
+            "статистика: статус={:?} rtt={} потери={:.0}% участники={roster:?} воспроизведение {:.0} к/с, со звуком {}/{}, пик {:.2}; захват {:.0} к/с, пик {:.4}, речь {:.2}; пакетов отправлено {}, принято {}",
             st.status,
             st.rtt_ms.map(|r| format!("{r:.0}мс")).unwrap_or("-".into()),
             st.loss_pct,
@@ -302,6 +316,8 @@ impl VoiceSession {
             p.frames,
             p.peak,
             self.captured_frames.swap(0, Ordering::Relaxed) as f32 / secs,
+            f32::from_bits(self.capture_peak.swap(0, Ordering::Relaxed)),
+            st.voice_prob,
             self.shared.tx_packets.load(Ordering::Relaxed),
             self.shared.rx_packets.load(Ordering::Relaxed),
         ));
