@@ -60,6 +60,9 @@ pub struct Controls {
     pub deafened: AtomicBool,
     /// Шумодав: при выключенном RNNoise всё равно считает вероятность речи, но шлём исходный звук.
     pub denoise: AtomicBool,
+    /// Сервер подтвердил вход: только тогда голос уходит в сеть. Пока мы «подключаемся»,
+    /// человек не видит, кто в комнате, и его не должно быть слышно.
+    pub connected: AtomicBool,
     vad_threshold: AtomicU32,
 }
 
@@ -106,6 +109,7 @@ impl Shared {
                 mic_muted: AtomicBool::new(false),
                 deafened: AtomicBool::new(false),
                 denoise: AtomicBool::new(true),
+                connected: AtomicBool::new(false),
                 vad_threshold: AtomicU32::new(vad_threshold.to_bits()),
             },
             repaint,
@@ -253,6 +257,7 @@ fn set_status(shared: &Shared, status: Status, session: u32) {
         crate::log::info(&format!("статус {:?} -> {status:?}, сессия {session}", st.status));
         st.status = status;
         st.my_session = session;
+        shared.controls.connected.store(status == Status::Connected, Ordering::Relaxed);
         if status != Status::Connected {
             st.rtt_ms = None;
         }

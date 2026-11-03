@@ -126,7 +126,8 @@ impl TxPipeline {
         self.frame_no = self.frame_no.wrapping_add(1);
         let muted = self.shared.controls.mic_muted.load(Ordering::Relaxed)
             || self.shared.controls.deafened.load(Ordering::Relaxed);
-        let send = self.frame_open && !muted;
+        let connected = self.shared.controls.connected.load(Ordering::Relaxed);
+        let send = self.frame_open && !muted && connected;
 
         if send {
             // Pre-roll: на открытии гейта шлём и предыдущий кадр, чтобы не съесть начало слова.
