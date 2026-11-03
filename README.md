@@ -1,7 +1,7 @@
 # voiceOn
 
 Лёгкие голосовые созвоны для своей компании: один маленький relay-сервер на VPS
-и клиент с окном на Windows и Linux.
+и клиенты для Windows, Linux и Android.
 
 - Голос: Opus 48 кГц моно, 20 мс, 32 кбит/с, FEC; шумодав RNNoise и голосовая активация.
 - Сеть: голый UDP, всё зашифровано ChaCha20-Poly1305 ключом из общей парольной фразы.
@@ -18,11 +18,32 @@
 |---|---|
 | `voiceon-windows-x86_64.exe` | клиент для Windows 10/11, установка не нужна |
 | `voiceon-linux-x86_64` | клиент для Linux (нужна свежая glibc: Arch/CachyOS/Fedora; на старых дистрибутивах собери из исходников) |
+| `voiceon-android.apk` | клиент для Android 8.0 и новее |
 | `voiceon-server-linux-x86_64` | сервер, статический бинарник |
 | `SHA256SUMS` | контрольные суммы |
 
 Windows при первом запуске может показать SmartScreen («Неизвестный издатель»):
 «Подробнее» → «Выполнить в любом случае». На Linux: `chmod +x voiceon-linux-x86_64`.
+
+## Android
+
+**Установка.** Скачай `voiceon-android.apk` со страницы релиза прямо на телефон и открой.
+Android спросит, можно ли устанавливать приложения из этого источника (браузера или
+файлового менеджера): «Настройки» → включи «Разрешить из этого источника» → назад →
+«Установить». С компьютера можно поставить по USB: `adb install voiceon-android.apk`.
+
+**Звонок.** Сервер, ник и пароль — те же, что на компьютере. При первом подключении
+приложение попросит доступ к микрофону, уведомлениям и (на Android 12+) к устройствам
+Bluetooth — без последнего не заработает Bluetooth-гарнитура. Звонок идёт в фоне и с
+выключенным экраном; в уведомлении — число участников и кнопки «Микрофон вкл/выкл» и
+«Отключиться». Подключённая гарнитура (проводная или Bluetooth) берётся сама, иначе звук
+идёт в разговорный динамик; «Громкая связь» внизу экрана переключает на основной.
+Переход с Wi-Fi на мобильную сеть звонок не рвёт. Эхо гасит сам телефон.
+
+**Обновления.** При запуске приложение смотрит последний релиз на GitHub; если там есть
+APK новее, на экране входа появится «Доступна vX — Обновить». Приложение скачает его,
+проверит подпись тем же ключом, что и у десктопа, и откроет системный установщик. В первый
+раз Android попросит разрешить установку из voiceOn — включи и нажми «Обновить» ещё раз.
 
 ## Как пользоваться
 
@@ -67,6 +88,19 @@ cargo test --workspace
 cargo build --release -p voiceon                                    # клиент Linux
 cargo build --release -p voiceon --target x86_64-pc-windows-gnu     # клиент Windows (mingw-w64)
 cargo build --release -p voiceon-server --target x86_64-unknown-linux-musl  # сервер, статический
+```
+
+APK собирает Gradle, `.so` ядра — `cargo-ndk` из Gradle-задачи. Нужны JDK 17+, Android SDK
+с NDK 30 и `cargo-ndk` (`cargo install cargo-ndk`, плюс
+`rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android`).
+В `android/local.properties` укажи `sdk.dir=…` (и `cargo.bin=…`, если `cargo-ndk` не в `PATH`):
+
+```sh
+cd android
+./gradlew :app:assembleDebug     # app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleRelease   # подпись — файл свойств из VOICEON_ANDROID_SIGNING
+                                 # или ~/.config/voiceon-android.properties
+adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
 ## Сервер
@@ -119,7 +153,10 @@ voiceon --bot --server host:47800 --pass "фраза" --nick bot1 --seconds 20
 |---|---|
 | `proto` | заголовок пакета, PSK (Argon2id) + ChaCha20-Poly1305, replay-окно, roster/voice |
 | `server` | relay: сессии по `session_id`, роуминг адреса, таймауты, периодический roster |
-| `client` | cpal → RNNoise/VAD → Opus → UDP; jitter buffer → микшер → cpal; окно egui |
+| `core` | общее ядро клиентов: сеть, RNNoise/VAD → Opus, jitter buffer → микшер, проверка подписи релизов |
+| `client` | десктоп: звук через cpal, окно egui, трей, автообновление |
+| `ffi` | обёртка `core` для Kotlin (UniFFI) → `libvoiceon_ffi.so` |
+| `android` | приложение на Kotlin + Compose: звук через AudioRecord/AudioTrack, звонок в foreground-сервисе |
 
 Пакет: `version | kind | room_id | session_id | seq | ciphertext | tag`.
 Заголовок открыт, но аутентифицирован; nonce = `session_id ‖ seq`, и каждая сторона
