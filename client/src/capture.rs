@@ -31,6 +31,8 @@ pub struct TxPipeline {
     frame_no: u32,
     level_acc: f32,
     level_n: u32,
+    /// Максимум вероятности речи за текущий 20-мс кадр.
+    prob_acc: f32,
     packet: Vec<u8>,
     /// Без шумодава и VAD — для бота-тестера.
     raw: bool,
@@ -69,6 +71,7 @@ impl TxPipeline {
             frame_no: 0,
             level_acc: 0.0,
             level_n: 0,
+            prob_acc: 0.0,
             packet: vec![0u8; 1275],
             raw,
         })
@@ -98,6 +101,13 @@ impl TxPipeline {
             let prob = self.denoise.process_frame(&mut self.rnn_out, &self.pending);
             for s in self.rnn_out.iter_mut() {
                 *s /= 32768.0;
+            }
+            self.prob_acc = self.prob_acc.max(prob);
+            // Шумодав выключен: RNNoise нужен только для VAD, шлём исходные сэмплы.
+            if !self.shared.controls.denoise.load(Ordering::Relaxed) {
+                for (o, i) in self.rnn_out.iter_mut().zip(&self.pending) {
+                    *o = *i / 32768.0;
+                }
             }
             self.gate.set_threshold(self.shared.controls.vad_threshold());
             self.gate.update(prob)
@@ -135,8 +145,10 @@ impl TxPipeline {
             let changed = st.transmitting != send;
             st.transmitting = send;
             st.mic_level = if muted { 0.0 } else { self.level_acc };
+            st.voice_prob = self.prob_acc;
             drop(st);
             self.level_acc = 0.0;
+            self.prob_acc = 0.0;
             self.level_n = 0;
             if changed {
                 (self.shared.repaint)();

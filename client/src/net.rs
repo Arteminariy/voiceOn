@@ -38,7 +38,10 @@ pub struct State {
     pub volumes: HashMap<String, f32>,
     pub mic_level: f32,
     pub transmitting: bool,
-    pub audio_error: Option<String>,
+    /// Вероятность речи по RNNoise (макс. за 20-мс кадр) — для полосы в настройках.
+    pub voice_prob: f32,
+    /// Последняя ошибка звука и момент, когда она случилась (в UI показывается ~5 с).
+    pub audio_error: Option<(String, Instant)>,
 }
 
 impl State {
@@ -55,6 +58,8 @@ impl State {
 pub struct Controls {
     pub mic_muted: AtomicBool,
     pub deafened: AtomicBool,
+    /// Шумодав: при выключенном RNNoise всё равно считает вероятность речи, но шлём исходный звук.
+    pub denoise: AtomicBool,
     vad_threshold: AtomicU32,
 }
 
@@ -90,12 +95,14 @@ impl Shared {
                 volumes,
                 mic_level: 0.0,
                 transmitting: false,
+                voice_prob: 0.0,
                 audio_error: None,
             }),
             jitter: Mutex::new(HashMap::new()),
             controls: Controls {
                 mic_muted: AtomicBool::new(false),
                 deafened: AtomicBool::new(false),
+                denoise: AtomicBool::new(true),
                 vad_threshold: AtomicU32::new(vad_threshold.to_bits()),
             },
             repaint,

@@ -26,11 +26,12 @@ fn main() {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("voiceOn")
             .with_app_id("voiceon")
-            .with_inner_size([380.0, 360.0])
-            .with_min_inner_size([300.0, 220.0]),
+            .with_inner_size([380.0, 560.0])
+            .with_min_inner_size([300.0, 220.0])
+            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).expect("встроенная иконка")),
         ..Default::default()
     };
-    if let Err(e) = eframe::run_native("voiceOn", options, Box::new(|_cc| Ok(Box::new(ui::VoiceApp::new())))) {
+    if let Err(e) = eframe::run_native("voiceOn", options, Box::new(|cc| Ok(Box::new(ui::VoiceApp::new(cc))))) {
         eprintln!("не удалось открыть окно: {e}");
         std::process::exit(1);
     }

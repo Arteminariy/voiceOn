@@ -18,6 +18,8 @@ pub struct Config {
     pub output_device: Option<String>,
     /// Порог вероятности речи для VAD (0..1).
     pub vad_threshold: f32,
+    /// Шумодав RNNoise включён.
+    pub denoise: bool,
     /// Громкость каждого участника по нику, 1.0 = 100%.
     pub volumes: HashMap<String, f32>,
     pub bitrate: i32,
@@ -33,6 +35,7 @@ impl Default for Config {
             input_device: None,
             output_device: None,
             vad_threshold: 0.6,
+            denoise: true,
             volumes: HashMap::new(),
             bitrate: 32_000,
             fec_loss_perc: 10,
