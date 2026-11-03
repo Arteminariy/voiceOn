@@ -135,7 +135,14 @@ fn new_socket(server: SocketAddr) -> std::io::Result<UdpSocket> {
 
 /// `host`, `host:port` → адрес; IPv4 в приоритете.
 pub fn resolve(server: &str) -> Result<SocketAddr, String> {
-    let s = server.trim();
+    let mut s = server.trim();
+    // Люди вставляют адрес как ссылку — отрезаем схему и хвостовой слэш.
+    for scheme in ["https://", "http://", "udp://"] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            s = rest;
+        }
+    }
+    let s = s.trim_end_matches('/');
     if s.is_empty() {
         return Err("не указан сервер".into());
     }
@@ -376,4 +383,18 @@ fn run(link: Arc<Link>, shared: Arc<Shared>, nick: String) {
         }
     }
     link.bye();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve;
+
+    #[test]
+    fn resolve_strips_scheme_and_adds_default_port() {
+        let a = resolve("https://127.0.0.1:123/").unwrap();
+        assert_eq!(a.to_string(), "127.0.0.1:123");
+        let b = resolve(" 127.0.0.1 ").unwrap();
+        assert_eq!(b.port(), voiceon_proto::DEFAULT_PORT);
+        assert!(resolve("").is_err());
+    }
 }
