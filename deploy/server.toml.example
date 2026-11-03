@@ -1,0 +1,3 @@
+# /etc/voiceon/server.toml (права 0600, владелец root)
+bind = "0.0.0.0:47800"
+passphrase = "придумай-длинную-фразу"

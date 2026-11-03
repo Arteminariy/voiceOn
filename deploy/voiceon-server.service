@@ -1,0 +1,29 @@
+[Unit]
+Description=voiceOn relay server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Restart=always
+RestartSec=2
+DynamicUser=yes
+# Конфиг с парольной фразой лежит root:root 0600; сервису он отдаётся через credentials.
+LoadCredential=server.toml:/etc/voiceon/server.toml
+ExecStart=/usr/local/bin/voiceon-server --config ${CREDENTIALS_DIRECTORY}/server.toml
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+MemoryMax=64M
+
+[Install]
+WantedBy=multi-user.target
