@@ -1,0 +1,16 @@
+[package]
+name = "voiceon"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+voiceon-proto = { path = "../proto" }
+getrandom = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
+opus = "0.4"
+cpal = "0.18"
+nnnoiseless = "0.5"
+ringbuf = "0.4"
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11", "clipboard"] }
