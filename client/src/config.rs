@@ -24,6 +24,8 @@ pub struct Config {
     pub volumes: HashMap<String, f32>,
     pub bitrate: i32,
     pub fec_loss_perc: i32,
+    /// Запускать вместе с системой (спрятанным в трей).
+    pub autostart: bool,
 }
 
 impl Default for Config {
@@ -39,6 +41,7 @@ impl Default for Config {
             volumes: HashMap::new(),
             bitrate: 32_000,
             fec_loss_perc: 10,
+            autostart: false,
         }
     }
 }

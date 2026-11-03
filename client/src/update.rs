@@ -38,7 +38,7 @@ pub type Shared = Arc<Mutex<Status>>;
 /// указывает на удалённый файл (`… (deleted)`).
 static EXE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
 
-fn exe_path() -> Option<PathBuf> {
+pub(crate) fn exe_path() -> Option<PathBuf> {
     EXE.get_or_init(|| std::env::current_exe().ok()).clone()
 }
 
@@ -83,7 +83,7 @@ fn get(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>, String> {
     resp.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| format!("{url}: {e}"))
 }
 
-fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+pub(crate) fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     let s = s.trim().trim_start_matches('v');
     let mut it = s.split('.').map(|p| p.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("").parse::<u64>());
     Some((it.next()?.ok()?, it.next()?.ok()?, it.next().unwrap_or(Ok(0)).ok()?))
@@ -169,10 +169,15 @@ fn staging_path(exe: &std::path::Path) -> PathBuf {
 }
 
 /// Перезапускает приложение с теми же аргументами (после установленного обновления).
-pub fn restart(tag: &str) -> ! {
+/// `hidden` — окно сейчас спрятано в трей: новая копия тоже стартует спрятанной.
+pub fn restart(tag: &str, hidden: bool) -> ! {
     crate::log::info(&format!("перезапуск после обновления до {tag}"));
     if let Some(exe) = exe_path() {
-        let args: Vec<String> = std::env::args().skip(1).collect();
+        let mut args: Vec<String> =
+            std::env::args().skip(1).filter(|a| a != "--tray" && a != "--minimized").collect();
+        if hidden {
+            args.push("--tray".into());
+        }
         let _ = std::process::Command::new(exe).args(args).env("VOICEON_UPDATED_TO", tag).spawn();
     }
     std::process::exit(0);

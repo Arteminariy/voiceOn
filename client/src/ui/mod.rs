@@ -28,6 +28,20 @@ enum Screen {
     Settings,
 }
 
+/// Если панель с треем пропала, а окно спрятано, через столько показываем окно.
+const TRAY_LOST_SHOW: Duration = Duration::from_secs(10);
+const RESTORE_POS_DELAY: Duration = Duration::from_millis(150);
+
+/// Как запущено приложение.
+pub struct Launch {
+    /// `--tray`: стартовать спрятанным в трей.
+    pub start_hidden: bool,
+    /// Окно можно спрятать целиком; иначе (чистый Wayland) только свернуть.
+    pub can_hide: bool,
+    /// Самоустановка не удалась — показываем заметку.
+    pub install_error: Option<String>,
+}
+
 pub struct VoiceApp {
     cfg: Config,
     session: Option<Session>,
@@ -37,21 +51,171 @@ pub struct VoiceApp {
     /// Затухающий пик вероятности речи на полосе VAD.
     vad_peak: f32,
     update: crate::update::Shared,
+    tray: Option<crate::tray::Tray>,
+    /// Панель с треем на месте (Linux: StatusNotifierWatcher); с какого момента её нет.
+    tray_lost: Option<Instant>,
+    can_hide: bool,
+    /// Окно спрятано в трей (или свёрнуто, если спрятать нельзя).
+    hidden: bool,
+    /// Где было окно, когда его спрятали; когда вернуть его туда после показа.
+    hidden_pos: Option<egui::Pos2>,
+    /// (куда, когда, уже ставили и осталось проверить).
+    restore_pos: Option<(egui::Pos2, Instant, bool)>,
+    /// Поправка к позиции: KWin под X11 считает запрошенную позицию позицией рамки,
+    /// а winit сообщает позицию содержимого — без поправки окно сползает на высоту заголовка.
+    pos_fix: egui::Vec2,
+    /// Спрятать окно на первом кадре (`--tray`).
+    hide_on_start: bool,
+    /// Окно свернули в этом проходе (только без `can_hide`).
+    hid_this_pass: bool,
+    /// «Выход» из трея: закрытие окна больше не прячет его.
+    quitting: bool,
+    /// Ошибка автозапуска для экрана настроек.
+    autostart_error: Option<String>,
 }
 
 impl VoiceApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> VoiceApp {
+    pub fn new(cc: &eframe::CreationContext<'_>, launch: Launch) -> VoiceApp {
         theme::install(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
         let update = crate::update::spawn(move || ctx.request_repaint());
+        let tray = match crate::tray::Tray::spawn(&cc.egui_ctx) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                crate::log::info(&format!("трей недоступен: {e}"));
+                None
+            }
+        };
+        let cfg = Config::load();
+        // Путь к exe мог поменяться (установка) — прописываем автозапуск заново.
+        let autostart_error = if cfg.autostart { crate::autostart::set(true).err() } else { None };
+        if let Some(e) = &autostart_error {
+            crate::log::info(&format!("автозапуск: {e}"));
+        }
         VoiceApp {
-            cfg: Config::load(),
+            cfg,
             session: None,
-            error: None,
+            error: launch.install_error.map(|e| format!("Не удалось установить приложение: {e}")),
             devices: audio::list_devices(),
             screen: Screen::Main,
             vad_peak: 0.0,
             update,
+            // Без трея спрятанное окно не вернуть — тогда стартуем как обычно.
+            hide_on_start: launch.start_hidden && tray.is_some(),
+            tray,
+            tray_lost: None,
+            can_hide: launch.can_hide,
+            hidden: false,
+            hidden_pos: None,
+            restore_pos: None,
+            pos_fix: egui::Vec2::ZERO,
+            hid_this_pass: false,
+            quitting: false,
+            autostart_error,
+        }
+    }
+
+    /// Трей есть и виден — значит, окно можно прятать.
+    fn tray_usable(&self) -> bool {
+        self.tray.is_some() && self.tray_lost.is_none()
+    }
+
+    fn hide(&mut self, ctx: &egui::Context) {
+        if self.can_hide {
+            // Оконный менеджер заново расставляет показанное окно — запомним, где оно было.
+            self.hidden_pos = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            self.hid_this_pass = true;
+        }
+        self.hidden = true;
+    }
+
+    fn show(&mut self, ctx: &egui::Context) {
+        // Место возвращаем чуть позже: сразу после показа оконный менеджер ещё расставляет окно.
+        if self.hidden {
+            self.restore_pos = self.hidden_pos.take().map(|p| (p, Instant::now() + RESTORE_POS_DELAY, false));
+            ctx.request_repaint_after(RESTORE_POS_DELAY);
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        if self.can_hide {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        self.hidden = false;
+        ctx.request_repaint();
+    }
+
+    /// Возвращает показанное окно на прежнее место; один раз проверяет, куда оно встало,
+    /// и запоминает поправку на будущее.
+    fn restore_position(&mut self, ctx: &egui::Context) {
+        let Some((target, at, placed)) = self.restore_pos else { return };
+        let left = at.saturating_duration_since(Instant::now());
+        if !left.is_zero() {
+            ctx.request_repaint_after(left);
+            return;
+        }
+        if !placed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(target - self.pos_fix));
+            self.restore_pos = Some((target, Instant::now() + RESTORE_POS_DELAY, true));
+            ctx.request_repaint_after(RESTORE_POS_DELAY);
+            return;
+        }
+        self.restore_pos = None;
+        let Some(now) = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min) else { return };
+        let off = now - target;
+        // Сдвиг на величину рамки (не больше ~100 px) поправляем; большой — пользователь двигал окно.
+        if off != egui::Vec2::ZERO && off.x.abs() < 100.0 && off.y.abs() < 100.0 {
+            self.pos_fix += off;
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(target - self.pos_fix));
+        }
+    }
+
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        use crate::tray::Event;
+        while let Some(ev) = self.tray.as_ref().and_then(|t| t.try_recv()) {
+            match ev {
+                Event::Show => self.show(ctx),
+                Event::ToggleMic | Event::ToggleSound => {
+                    if let Some(s) = &self.session {
+                        let c = &s.shared.controls;
+                        let flag = if ev == Event::ToggleMic { &c.mic_muted } else { &c.deafened };
+                        flag.fetch_xor(true, Ordering::Relaxed);
+                    }
+                }
+                Event::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.request_repaint(); // при спрятанном окне закрытие придёт следующим проходом
+                }
+                Event::HostOffline => {
+                    self.tray_lost.get_or_insert_with(Instant::now);
+                }
+                Event::HostOnline => self.tray_lost = None,
+            }
+        }
+        // Панель с треем пропала надолго — спрятанное окно больше нечем вернуть.
+        if let Some(t) = self.tray_lost
+            && self.hidden
+        {
+            let left = TRAY_LOST_SHOW.saturating_sub(t.elapsed());
+            if left.is_zero() {
+                self.show(ctx);
+            } else {
+                ctx.request_repaint_after(left);
+            }
+        }
+        if let Some(tray) = &mut self.tray {
+            let state = match &self.session {
+                Some(s) => crate::tray::State {
+                    in_call: true,
+                    mic_muted: s.shared.controls.mic_muted.load(Ordering::Relaxed),
+                    deafened: s.shared.controls.deafened.load(Ordering::Relaxed),
+                },
+                None => crate::tray::State::default(),
+            };
+            tray.set_state(state);
         }
     }
 
@@ -367,6 +531,35 @@ impl VoiceApp {
                         });
                     });
                 });
+
+                Frame::NONE.fill(p.surface).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(12)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("Запускать с системой").size(14.0).color(p.text));
+                            ui.label(RichText::new("сразу в трей, без окна").size(12.0).color(p.dim));
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let mut on = self.cfg.autostart;
+                            if widgets::toggle(ui, &mut on, &p) {
+                                match crate::autostart::set(on) {
+                                    Ok(()) => {
+                                        self.cfg.autostart = on;
+                                        self.autostart_error = None;
+                                        let _ = self.cfg.save();
+                                    }
+                                    Err(e) => {
+                                        crate::log::info(&format!("автозапуск: {e}"));
+                                        self.autostart_error = Some(e);
+                                    }
+                                }
+                            }
+                        });
+                    });
+                });
+                if let Some(e) = self.autostart_error.clone() {
+                    error_box(ui, &p, &format!("Автозапуск: {e}"));
+                }
             });
         });
         if back {
@@ -480,7 +673,19 @@ fn device_combo(ui: &mut Ui, p: &Palette, id: &str, value: &mut Option<String>, 
 }
 
 impl eframe::App for VoiceApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    /// Зовётся и при спрятанном окне: трей, закрытие в трей и перезапуск после обновления.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if std::mem::take(&mut self.hide_on_start) {
+            self.hide(ctx);
+            self.hidden_pos = None; // окно ещё не расставлено — при показе место выберет оконный менеджер
+        }
+        self.handle_tray(ctx);
+        self.restore_position(ctx);
+        // Крестик прячет окно в трей, звонок продолжается; «Выход» в трее закрывает по-настоящему.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.tray_usable() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.hide(ctx);
+        }
         // Новая версия уже на месте бинарника — перезапускаемся, когда нет звонка.
         let installed = match &*self.update.lock().unwrap() {
             crate::update::Status::Installed(tag) => Some(tag.clone()),
@@ -488,15 +693,23 @@ impl eframe::App for VoiceApp {
         };
         if let (Some(tag), None) = (installed, &self.session) {
             let _ = self.cfg.save();
-            crate::update::restart(&tag);
+            self.tray = None; // убрать значок до выхода
+            crate::update::restart(&tag, self.hidden);
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Свёрнутое (не спрятанное) окно вернули с панели задач: ui снова рисуется.
+        if !self.can_hide && !std::mem::take(&mut self.hid_this_pass) {
+            self.hidden = false;
         }
         match self.screen {
             Screen::Settings => self.settings_screen(ui),
             Screen::Main if self.session.is_some() => self.call_screen(ui),
             Screen::Main => self.login_screen(ui),
         }
-        // Индикаторы живут только в звонке; вне звонка перерисовка по событиям.
-        if self.session.is_some() {
+        // Индикаторы живут только в звонке и в видимом окне; иначе перерисовка по событиям.
+        if self.session.is_some() && !self.hidden {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
     }
