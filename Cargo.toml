@@ -3,7 +3,7 @@ resolver = "3"
 members = ["proto", "server", "client", "tools"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 
 [profile.release]

@@ -34,12 +34,21 @@ pub enum Status {
 
 pub type Shared = Arc<Mutex<Status>>;
 
+/// Путь к себе, запомненный до подмены: после неё на Linux `current_exe()`
+/// указывает на удалённый файл (`… (deleted)`).
+static EXE: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+
+fn exe_path() -> Option<PathBuf> {
+    EXE.get_or_init(|| std::env::current_exe().ok()).clone()
+}
+
 pub fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
 /// Запускает проверку в фоне. `on_change` вызывается при смене статуса (перерисовка UI).
 pub fn spawn(on_change: impl Fn() + Send + 'static) -> Shared {
+    exe_path();
     let status: Shared = Arc::new(Mutex::new(Status::Checking));
     let st = status.clone();
     let _ = std::thread::Builder::new().name("voiceon-update".into()).spawn(move || {
@@ -140,7 +149,7 @@ fn check_and_install(set: &dyn Fn(Status)) -> Result<Option<String>, String> {
         return Err("sha256 скачанного файла не совпал".into());
     }
 
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = exe_path().ok_or("не знаю путь к себе")?;
     let tmp = staging_path(&exe);
     std::fs::write(&tmp, &bin).map_err(|e| format!("{}: {e}", tmp.display()))?;
     #[cfg(unix)]
@@ -162,7 +171,7 @@ fn staging_path(exe: &std::path::Path) -> PathBuf {
 /// Перезапускает приложение с теми же аргументами (после установленного обновления).
 pub fn restart(tag: &str) -> ! {
     crate::log::info(&format!("перезапуск после обновления до {tag}"));
-    if let Ok(exe) = std::env::current_exe() {
+    if let Some(exe) = exe_path() {
         let args: Vec<String> = std::env::args().skip(1).collect();
         let _ = std::process::Command::new(exe).args(args).env("VOICEON_UPDATED_TO", tag).spawn();
     }
