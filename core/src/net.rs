@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -80,6 +80,9 @@ pub struct Shared {
     pub controls: Controls,
     pub repaint: Repaint,
     pub stop: AtomicBool,
+    /// Счётчики голосовых пакетов: отправлено и принято (для журнала и бота).
+    pub tx_packets: AtomicU64,
+    pub rx_packets: AtomicU64,
 }
 
 impl Shared {
@@ -107,6 +110,8 @@ impl Shared {
             },
             repaint,
             stop: AtomicBool::new(false),
+            tx_packets: AtomicU64::new(0),
+            rx_packets: AtomicU64::new(0),
         })
     }
 }
@@ -200,6 +205,13 @@ impl Link {
         if sock.send_to(&pkt, self.server).is_err() {
             self.socket_broken.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// Сменилась сеть (Wi-Fi → LTE): сетевой поток сразу пересоздаст сокет,
+    /// сессия остаётся та же — сервер узнает новый адрес по первому пакету.
+    pub fn network_changed(&self) {
+        crate::log::info("сеть сменилась — пересоздаю сокет");
+        self.socket_broken.store(true, Ordering::Relaxed);
     }
 
     /// Новый сокет, та же сессия: сервер увидит новый адрес и обновит его.
@@ -388,6 +400,7 @@ fn run(link: Arc<Link>, shared: Arc<Shared>, nick: String) {
             }
             Kind::Voice => {
                 if let Some((frame_no, opus)) = decode_voice(&payload) {
+                    shared.rx_packets.fetch_add(1, Ordering::Relaxed);
                     shared
                         .jitter
                         .lock()

@@ -9,12 +9,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use ed25519_dalek::{Signature, VerifyingKey};
-use sha2::{Digest, Sha256};
+pub(crate) use voiceon_core::release::parse_version;
+use voiceon_core::release::{REPO, check_hash, verified_hash};
 
-const REPO: &str = "Arteminariy/voiceOn";
-/// Публичный ключ подписи релизов (`voiceon-release pubkey`).
-const RELEASE_PUBKEY: &str = "6a0a4f0cb0f0781fbbbc3e012faecfb4a96ea567438dc2df1af400fe68889204";
 const MAX_BINARY: u64 = 64 * 1024 * 1024;
 
 #[cfg(windows)]
@@ -83,40 +80,6 @@ fn get(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>, String> {
     resp.body_mut().with_config().limit(limit).read_to_vec().map_err(|e| format!("{url}: {e}"))
 }
 
-pub(crate) fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
-    let s = s.trim().trim_start_matches('v');
-    let mut it = s.split('.').map(|p| p.split(|c: char| !c.is_ascii_digit()).next().unwrap_or("").parse::<u64>());
-    Some((it.next()?.ok()?, it.next()?.ok()?, it.next().unwrap_or(Ok(0)).ok()?))
-}
-
-fn unhex<const N: usize>(s: &str) -> Option<[u8; N]> {
-    let s = s.trim();
-    if s.len() != N * 2 {
-        return None;
-    }
-    let mut out = [0u8; N];
-    for (i, c) in s.as_bytes().chunks(2).enumerate() {
-        out[i] = u8::from_str_radix(std::str::from_utf8(c).ok()?, 16).ok()?;
-    }
-    Some(out)
-}
-
-/// Проверяет подпись `SHA256SUMS` и возвращает ожидаемый sha256 нашего файла.
-fn verified_hash(sums: &[u8], sig_hex: &[u8], asset: &str) -> Result<[u8; 32], String> {
-    let pk = VerifyingKey::from_bytes(&unhex::<32>(RELEASE_PUBKEY).ok_or("битый ключ")?)
-        .map_err(|e| e.to_string())?;
-    let sig = unhex::<64>(std::str::from_utf8(sig_hex).map_err(|_| "битая подпись")?)
-        .ok_or("битая подпись")?;
-    pk.verify_strict(sums, &Signature::from_bytes(&sig))
-        .map_err(|_| "подпись релиза не сошлась — обновление отклонено")?;
-    let text = std::str::from_utf8(sums).map_err(|_| "битый SHA256SUMS")?;
-    let line = text
-        .lines()
-        .find(|l| l.split_whitespace().nth(1).map(|n| n.trim_start_matches('*')) == Some(asset))
-        .ok_or_else(|| format!("в релизе нет {asset}"))?;
-    unhex::<32>(line.split_whitespace().next().unwrap_or("")).ok_or_else(|| "битый SHA256SUMS".into())
-}
-
 fn check_and_install(set: &dyn Fn(Status)) -> Result<Option<String>, String> {
     let agent = agent();
     let api = format!("https://api.github.com/repos/{REPO}/releases/latest");
@@ -144,10 +107,7 @@ fn check_and_install(set: &dyn Fn(Status)) -> Result<Option<String>, String> {
     let expected = verified_hash(&sums, &sig, ASSET)?;
 
     let bin = get(&agent, &format!("{base}/{ASSET}"), MAX_BINARY)?;
-    let actual: [u8; 32] = Sha256::digest(&bin).into();
-    if actual != expected {
-        return Err("sha256 скачанного файла не совпал".into());
-    }
+    check_hash(&bin, &expected)?;
 
     let exe = exe_path().ok_or("не знаю путь к себе")?;
     let tmp = staging_path(&exe);
@@ -181,29 +141,4 @@ pub fn restart(tag: &str, hidden: bool) -> ! {
         let _ = std::process::Command::new(exe).args(args).env("VOICEON_UPDATED_TO", tag).spawn();
     }
     std::process::exit(0);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn versions() {
-        assert!(parse_version("v0.2.0") > parse_version("0.1.9"));
-        assert_eq!(parse_version("v1.2"), Some((1, 2, 0)));
-        assert_eq!(parse_version("v0.3.0-beta"), Some((0, 3, 0)));
-        assert!(parse_version("garbage").is_none());
-    }
-
-    #[test]
-    fn rejects_bad_signature() {
-        let sums = b"00  voiceon-linux-x86_64\n";
-        let sig = "00".repeat(64);
-        assert!(verified_hash(sums, sig.as_bytes(), "voiceon-linux-x86_64").is_err());
-    }
-
-    #[test]
-    fn pubkey_parses() {
-        assert!(VerifyingKey::from_bytes(&unhex::<32>(RELEASE_PUBKEY).unwrap()).is_ok());
-    }
 }

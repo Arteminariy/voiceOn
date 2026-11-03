@@ -168,6 +168,7 @@ impl TxPipeline {
         if let Ok(n) = self.encoder.encode_float(frame, &mut self.packet) {
             let payload = encode_voice(frame_no, &self.packet[..n]);
             self.link.send(Kind::Voice, &payload);
+            self.shared.tx_packets.fetch_add(1, Ordering::Relaxed);
         }
     }
 }

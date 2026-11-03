@@ -4026,26 +4026,34 @@ version = "0.3.0"
 dependencies = [
  "cpal",
  "dirs",
- "ed25519-dalek",
  "eframe",
  "egui-phosphor",
- "getrandom 0.2.17",
  "ksni",
  "mslnk",
- "nnnoiseless",
- "opus",
  "ringbuf",
  "self-replace",
  "serde",
  "serde_json",
- "sha2",
  "toml 0.8.23",
  "tray-icon",
  "ureq",
+ "voiceon-core",
  "voiceon-proto",
  "winit",
  "winreg",
  "winresource",
+]
+
+[[package]]
+name = "voiceon-core"
+version = "0.3.0"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.2.17",
+ "nnnoiseless",
+ "opus",
+ "sha2",
+ "voiceon-proto",
 ]
 
 [[package]]

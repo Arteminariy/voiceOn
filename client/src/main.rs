@@ -4,21 +4,21 @@
 mod audio;
 mod autostart;
 mod bot;
-mod capture;
 mod config;
-mod dsp;
 mod install;
-mod jitter;
 mod log;
-mod mixer;
-mod net;
 mod session;
 mod single_instance;
 mod tray;
 mod ui;
 mod update;
 
+// Сеть, звуковой конвейер и микшер живут в общем с Android ядре.
+use voiceon_core::{capture, dsp, mixer, net};
+
 fn main() {
+    // Журнал ядра пишем в тот же файл, что и свой.
+    voiceon_core::log::set_sink(log::info);
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("voiceon {}", install::version());
