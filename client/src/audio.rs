@@ -95,9 +95,13 @@ impl Drop for AudioIo {
     }
 }
 
-fn report_error(shared: &Shared, e: impl std::fmt::Display) {
+/// Запоминает ошибку потока для UI. Переполнение/опустошение буфера (Xrun) — обычное дело, его игнорируем.
+fn report_error(shared: &Shared, e: cpal::Error) {
+    if e.kind() == cpal::ErrorKind::Xrun {
+        return;
+    }
     if let Ok(mut st) = shared.state.lock() {
-        st.audio_error = Some(e.to_string());
+        st.audio_error = Some((e.to_string(), std::time::Instant::now()));
     }
     (shared.repaint)();
 }

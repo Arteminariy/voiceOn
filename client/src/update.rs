@@ -122,6 +122,11 @@ fn check_and_install(set: &dyn Fn(Status)) -> Result<Option<String>, String> {
     if latest <= current {
         return Ok(None);
     }
+    // Мы только что обновились до этого тега, а версия внутри всё ещё старая —
+    // релиз собран неправильно; не уходим в цикл перезапусков.
+    if std::env::var("VOICEON_UPDATED_TO").ok().as_deref() == Some(tag.as_str()) {
+        return Err(format!("{tag} уже установлен, но версия внутри {}", current_version()));
+    }
     set(Status::Downloading(tag.clone()));
 
     let base = format!("https://github.com/{REPO}/releases/download/{tag}");
@@ -155,10 +160,11 @@ fn staging_path(exe: &std::path::Path) -> PathBuf {
 }
 
 /// Перезапускает приложение с теми же аргументами (после установленного обновления).
-pub fn restart() -> ! {
+pub fn restart(tag: &str) -> ! {
+    crate::log::info(&format!("перезапуск после обновления до {tag}"));
     if let Ok(exe) = std::env::current_exe() {
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let _ = std::process::Command::new(exe).args(args).spawn();
+        let _ = std::process::Command::new(exe).args(args).env("VOICEON_UPDATED_TO", tag).spawn();
     }
     std::process::exit(0);
 }

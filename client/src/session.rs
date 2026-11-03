@@ -31,6 +31,7 @@ impl Session {
         let crypto = Crypto::from_passphrase(&cfg.passphrase);
         let link = Arc::new(Link::new(crypto, addr).map_err(|e| format!("сокет: {e}"))?);
         let shared = Shared::new(cfg.volumes.clone(), cfg.vad_threshold, repaint);
+        shared.controls.denoise.store(cfg.denoise, Ordering::Relaxed);
         let tx = TxPipeline::new(link.clone(), shared.clone(), cfg.bitrate, cfg.fec_loss_perc, false)?;
         let audio = audio::start(
             shared.clone(),
