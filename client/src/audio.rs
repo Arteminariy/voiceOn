@@ -189,6 +189,9 @@ pub fn start(
                         continue;
                     }
                     mixer.mix(&sh, &mut frame);
+                    // Локальный мониторинг саундпада; при дефене — молчит, но таймлайн идёт.
+                    let deaf = sh.controls.deafened.load(Ordering::Relaxed);
+                    sh.pad.mix_monitor(&mut frame, deaf);
                     resampled.clear();
                     rs.process(&frame, &mut resampled);
                     out_prod.push_slice(&resampled);
