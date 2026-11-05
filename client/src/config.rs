@@ -26,6 +26,31 @@ pub struct Config {
     pub fec_loss_perc: i32,
     /// Запускать вместе с системой (спрятанным в трей).
     pub autostart: bool,
+    /// Модуль «Саундпад».
+    pub soundpad: SoundpadConfig,
+}
+
+/// Настройки саундпада: модуль выключен по умолчанию.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SoundpadConfig {
+    pub enabled: bool,
+    /// Громкость звуков, 1.0 = 100%.
+    pub volume: f32,
+    /// Привязка слотов к файлам `sounds/slot_{slot}.wav`.
+    pub slots: Vec<SlotConfig>,
+}
+
+impl Default for SoundpadConfig {
+    fn default() -> SoundpadConfig {
+        SoundpadConfig { enabled: false, volume: 1.0, slots: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlotConfig {
+    pub slot: usize,
+    pub name: String,
 }
 
 impl Default for Config {
@@ -42,6 +67,7 @@ impl Default for Config {
             bitrate: 32_000,
             fec_loss_perc: 10,
             autostart: false,
+            soundpad: SoundpadConfig::default(),
         }
     }
 }
@@ -71,5 +97,36 @@ impl Config {
             let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_config_without_soundpad_parses_with_defaults() {
+        let cfg: Config = toml::from_str(r#"server = "x""#).unwrap();
+        assert!(!cfg.soundpad.enabled);
+        assert_eq!(cfg.soundpad.volume, 1.0);
+        assert!(cfg.soundpad.slots.is_empty());
+    }
+
+    #[test]
+    fn soundpad_roundtrip() {
+        let mut cfg = Config::default();
+        cfg.soundpad.enabled = true;
+        cfg.soundpad.volume = 0.7;
+        cfg.soundpad.slots = vec![
+            SlotConfig { slot: 0, name: "бум".into() },
+            SlotConfig { slot: 3, name: "вжух".into() },
+        ];
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert!(back.soundpad.enabled);
+        assert_eq!(back.soundpad.volume, 0.7);
+        assert_eq!(back.soundpad.slots.len(), 2);
+        assert_eq!(back.soundpad.slots[1].slot, 3);
+        assert_eq!(back.soundpad.slots[1].name, "вжух");
     }
 }
