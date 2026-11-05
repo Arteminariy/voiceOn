@@ -86,6 +86,8 @@ pub struct Shared {
     /// Счётчики голосовых пакетов: отправлено и принято (для журнала и бота).
     pub tx_packets: AtomicU64,
     pub rx_packets: AtomicU64,
+    /// Инстансы звуков саундпада: эфир и локальный мониторинг.
+    pub pad: crate::pad::Pad,
 }
 
 impl Shared {
@@ -116,6 +118,7 @@ impl Shared {
             stop: AtomicBool::new(false),
             tx_packets: AtomicU64::new(0),
             rx_packets: AtomicU64::new(0),
+            pad: crate::pad::Pad::new(),
         })
     }
 }
