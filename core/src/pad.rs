@@ -76,6 +76,11 @@ impl Pad {
             .any(|q| q.lock().unwrap().iter().any(|i| i.slot == slot))
     }
 
+    /// Играет ли хоть один инстанс (перерисовка UI, таймер простоя).
+    pub fn any_active(&self) -> bool {
+        !self.tx.lock().unwrap().is_empty() || !self.monitor.lock().unwrap().is_empty()
+    }
+
     /// Подмешать до `out.len()` сэмплов в передачу (+=, gain, soft_clip в конце),
     /// продвинуть инстансы, выкинуть доигранные. `discard = true`: дренировать
     /// без подмешивания (дефен/нет сети — таймлайн не встаёт).
@@ -186,5 +191,31 @@ mod tests {
         assert!(pad.mix_tx(&mut out, true));
         assert!(out.iter().all(|&s| s == 0.0));
         assert!(!pad.mix_tx(&mut out, false));
+    }
+
+    #[test]
+    fn any_active_toggles() {
+        let pad = Pad::new();
+        assert!(!pad.any_active());
+        pad.play(1, clip(0.5, 100));
+        assert!(pad.any_active());
+        let mut out = [0.0; 100];
+        pad.mix_tx(&mut out, false);
+        assert!(pad.any_active()); // мониторинг ещё играет
+        pad.mix_monitor(&mut out, false);
+        assert!(!pad.any_active());
+    }
+
+    #[test]
+    fn gain_change_applies_live() {
+        let pad = Pad::new();
+        pad.play(0, clip(0.5, 1920));
+        let mut out = [0.0; 960];
+        pad.mix_tx(&mut out, false);
+        assert!((out[0] - 0.5).abs() < 1e-6, "{}", out[0]);
+        pad.set_gain(0.5);
+        let mut out2 = [0.0; 960];
+        pad.mix_tx(&mut out2, false);
+        assert!((out2[0] - 0.25).abs() < 0.01, "{}", out2[0]);
     }
 }
