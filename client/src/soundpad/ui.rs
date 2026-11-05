@@ -29,7 +29,10 @@ pub fn drawer(ui: &mut Ui, pad: &mut Soundpad, session: Option<&Session>, cfg: &
     ui.horizontal(|ui| {
         ui.label(RichText::new("САУНДПАД").size(12.0).font(semibold(12.0)).color(p.muted));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if widgets::icon_button(ui, ph::STOP, 28.0, p.muted, "Остановить все звуки").clicked() {
+            let stop = egui::Button::new(
+                RichText::new(ph::STOP).font(crate::ui::theme::icon_font(14.0)).color(p.muted),
+            );
+            if ui.add(stop).on_hover_text("Остановить все звуки").clicked() {
                 pad.stop_all(session.map(|s| s.shared.as_ref()));
             }
             let mut v = cfg.soundpad.volume;
@@ -290,7 +293,7 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, de
                 if ui.button("Отмена").clicked() {
                     action = Dlg::Cancel;
                 }
-                if ui.button(RichText::new("Добавить").color(p.on_accent)).clicked() {
+                if ui.button(RichText::new("Добавить").color(p.accent)).clicked() {
                     action = Dlg::Add;
                 }
             });
