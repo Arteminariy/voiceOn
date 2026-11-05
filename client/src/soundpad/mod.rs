@@ -2,6 +2,7 @@
 
 pub mod import;
 pub mod preview;
+pub mod ui;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -31,6 +32,8 @@ pub struct TrimState {
     pub target_slot: usize,
     pub busy: bool,
     pub error: Option<String>,
+    /// Канал фонового декода: один ответ — (сэмплы 48 кГц моно, пики волны).
+    pub rx: Option<std::sync::mpsc::Receiver<Result<(Vec<f32>, Vec<(f32, f32)>), String>>>,
 }
 
 pub struct Soundpad {
@@ -38,6 +41,20 @@ pub struct Soundpad {
     pub drawer_open: bool,
     pub trim: Option<TrimState>,
     pub preview: Option<Preview>,
+    /// Какой слот играет через предпрослушивание (подсветка на экране входа).
+    pub preview_slot: Option<usize>,
+}
+
+impl Default for Soundpad {
+    fn default() -> Soundpad {
+        Soundpad {
+            slots: std::array::from_fn(|_| None),
+            drawer_open: false,
+            trim: None,
+            preview: None,
+            preview_slot: None,
+        }
+    }
 }
 
 impl Soundpad {
@@ -58,7 +75,7 @@ impl Soundpad {
                 }
             }
         }
-        Soundpad { slots, drawer_open: false, trim: None, preview: None }
+        Soundpad { slots, drawer_open: false, trim: None, preview: None, preview_slot: None }
     }
 
     pub fn remove(&mut self, cfg: &mut Config, dir: &Path, slot: usize) {
@@ -86,7 +103,10 @@ impl Soundpad {
         if let Some(s) = self.slots.get(slot).and_then(|s| s.as_ref()) {
             let len = s.samples.len();
             match Preview::play(cfg.output_device.as_deref(), s.samples.clone(), 0, len, cfg.soundpad.volume) {
-                Ok(p) => self.preview = Some(p),
+                Ok(p) => {
+                    self.preview = Some(p);
+                    self.preview_slot = Some(slot);
+                }
                 Err(e) => crate::log::info(&format!("саундпад: {e}")),
             }
         }
