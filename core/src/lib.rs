@@ -10,4 +10,5 @@ pub mod jitter;
 pub mod log;
 pub mod mixer;
 pub mod net;
+pub mod pad;
 pub mod release;

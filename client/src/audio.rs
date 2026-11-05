@@ -41,7 +41,7 @@ pub fn list_devices() -> DeviceLists {
     }
 }
 
-fn find_device(input: bool, name: Option<&str>) -> Result<cpal::Device, String> {
+pub(crate) fn find_device(input: bool, name: Option<&str>) -> Result<cpal::Device, String> {
     let host = cpal::default_host();
     if let Some(name) = name {
         let devs: Vec<cpal::Device> = if input {
@@ -58,7 +58,7 @@ fn find_device(input: bool, name: Option<&str>) -> Result<cpal::Device, String> 
 }
 
 /// Предпочитаем 48 кГц (тогда ресемплер не нужен), иначе — конфиг устройства по умолчанию.
-fn pick_config(dev: &cpal::Device, input: bool) -> Result<cpal::SupportedStreamConfig, String> {
+pub(crate) fn pick_config(dev: &cpal::Device, input: bool) -> Result<cpal::SupportedStreamConfig, String> {
     let default = if input { dev.default_input_config() } else { dev.default_output_config() }
         .map_err(|e| e.to_string())?;
     if default.sample_rate() == SAMPLE_RATE {
@@ -189,6 +189,9 @@ pub fn start(
                         continue;
                     }
                     mixer.mix(&sh, &mut frame);
+                    // Локальный мониторинг саундпада; при дефене — молчит, но таймлайн идёт.
+                    let deaf = sh.controls.deafened.load(Ordering::Relaxed);
+                    sh.pad.mix_monitor(&mut frame, deaf);
                     resampled.clear();
                     rs.process(&frame, &mut resampled);
                     out_prod.push_slice(&resampled);

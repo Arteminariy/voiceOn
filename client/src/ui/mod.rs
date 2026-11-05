@@ -1,8 +1,8 @@
 //! Окно на egui. Перерисовка только по событиям, а пока идёт звонок — ~10 раз в секунду
 //! ради индикаторов; свёрнутое окно не рисуется вовсе.
 
-mod theme;
-mod widgets;
+pub(crate) mod theme;
+pub(crate) mod widgets;
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -13,8 +13,10 @@ use egui_phosphor::regular as ph;
 
 use crate::audio::{self, DeviceLists};
 use crate::config::Config;
+use crate::modules::Module;
 use crate::net::Status;
 use crate::session::Session;
+use crate::soundpad::Soundpad;
 
 use theme::{Palette, pal, semibold};
 
@@ -72,6 +74,8 @@ pub struct VoiceApp {
     quitting: bool,
     /// Ошибка автозапуска для экрана настроек.
     autostart_error: Option<String>,
+    /// Модуль саундпада: слоты, дровер, диалог обрезки.
+    soundpad: Soundpad,
 }
 
 impl VoiceApp {
@@ -88,6 +92,9 @@ impl VoiceApp {
             }
         };
         let cfg = Config::load();
+        let soundpad = crate::soundpad::import::sounds_dir()
+            .map(|d| Soundpad::load(&cfg, &d))
+            .unwrap_or_default();
         // Путь к exe мог поменяться (установка) — прописываем автозапуск заново.
         let autostart_error = if cfg.autostart { crate::autostart::set(true).err() } else { None };
         if let Some(e) = &autostart_error {
@@ -113,6 +120,7 @@ impl VoiceApp {
             hid_this_pass: false,
             quitting: false,
             autostart_error,
+            soundpad,
         }
     }
 
@@ -223,6 +231,7 @@ impl VoiceApp {
     fn connect(&mut self, ctx: &egui::Context) {
         self.error = None;
         let _ = self.cfg.save();
+        self.soundpad.stop_all(None); // локальное предпрослушивание — в звонок не тащим
         let ctx = ctx.clone();
         match Session::connect(&self.cfg, Arc::new(move || ctx.request_repaint())) {
             Ok(s) => self.session = Some(s),
@@ -231,6 +240,7 @@ impl VoiceApp {
     }
 
     fn disconnect(&mut self) {
+        self.soundpad.stop_all(self.session.as_ref().map(|s| s.shared.as_ref()));
         if let Some(s) = self.session.take() {
             // Громкости, выставленные во время звонка, сохраняем в конфиг.
             self.cfg.volumes = s.shared.state.lock().unwrap().volumes.clone();
@@ -245,6 +255,14 @@ impl VoiceApp {
         egui::Panel::bottom("login_footer").show_separator_line(false).frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(0, 10))).show(ui, |ui| {
             ui.vertical_centered(|ui| version_label(ui, &p, "v", &self.update));
         });
+        if Soundpad::enabled(&self.cfg) && self.soundpad.drawer_open {
+            egui::Panel::bottom("soundpad_drawer")
+                .show_separator_line(true)
+                .frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(16, 10)))
+                .show(ui, |ui| {
+                    crate::soundpad::ui::drawer(ui, &mut self.soundpad, None, &mut self.cfg, &p);
+                });
+        }
         egui::CentralPanel::default().frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(24, 16))).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 16.0;
@@ -254,6 +272,12 @@ impl VoiceApp {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if widgets::icon_button(ui, ph::SLIDERS_HORIZONTAL, 36.0, p.muted, "Настройки").clicked() {
                             self.screen = Screen::Settings;
+                        }
+                        if Soundpad::enabled(&self.cfg) {
+                            let color = if self.soundpad.drawer_open { p.accent } else { p.muted };
+                            if widgets::icon_button(ui, ph::MUSIC_NOTES, 36.0, color, "Саундпад").clicked() {
+                                self.soundpad.drawer_open = !self.soundpad.drawer_open;
+                            }
                         }
                     });
                 });
@@ -321,6 +345,8 @@ impl VoiceApp {
 
         let tall = ui.ctx().content_rect().height() >= 400.0;
         let pad = if tall { 16 } else { 8 };
+        let pad_on = Soundpad::enabled(&self.cfg);
+        let mut toggle_drawer = false;
         egui::Panel::bottom("call_footer")
             .show_separator_line(true)
             .frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(16, pad)))
@@ -330,7 +356,8 @@ impl VoiceApp {
                 let mut deaf = c.deafened.load(Ordering::Relaxed);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
-                    ui.add_space(((ui.available_width() - 52.0 * 3.0 - 32.0) / 2.0).max(0.0));
+                    let buttons = if pad_on { 4.0 } else { 3.0 };
+                    ui.add_space(((ui.available_width() - 52.0 * buttons - 16.0 * (buttons - 1.0)) / 2.0).max(0.0));
                     let (fill, fg) = if mic_muted { (p.round_btn_muted, p.danger) } else { (p.round_btn, p.text) };
                     let (icon, tip) = if mic_muted { (ph::MICROPHONE_SLASH, "Включить микрофон") } else { (ph::MICROPHONE, "Выключить микрофон") };
                     if widgets::round_button(ui, icon, fill, fg, tip).clicked() {
@@ -343,11 +370,26 @@ impl VoiceApp {
                         deaf = !deaf;
                         c.deafened.store(deaf, Ordering::Relaxed);
                     }
+                    if pad_on {
+                        let (fill, fg) = if self.soundpad.drawer_open { (p.accent, p.on_accent) } else { (p.round_btn, p.text) };
+                        if widgets::round_button(ui, ph::MUSIC_NOTES, fill, fg, "Саундпад").clicked() {
+                            toggle_drawer = true;
+                        }
+                    }
                     if widgets::round_button(ui, ph::PHONE_DISCONNECT, p.danger, egui::Color32::WHITE, "Отключиться").clicked() {
                         disconnect = true;
                     }
                 });
             });
+
+        if Soundpad::enabled(&self.cfg) && self.soundpad.drawer_open {
+            egui::Panel::bottom("soundpad_drawer")
+                .show_separator_line(true)
+                .frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(16, 10)))
+                .show(ui, |ui| {
+                    crate::soundpad::ui::drawer(ui, &mut self.soundpad, Some(session), &mut self.cfg, &p);
+                });
+        }
 
         let mic_muted = shared.controls.mic_muted.load(Ordering::Relaxed);
         let mut new_vols: Vec<(String, f32)> = Vec::new();
@@ -440,6 +482,9 @@ impl VoiceApp {
         if open_settings {
             self.screen = Screen::Settings;
         }
+        if toggle_drawer {
+            self.soundpad.drawer_open = !self.soundpad.drawer_open;
+        }
         if disconnect {
             self.disconnect();
         }
@@ -526,6 +571,29 @@ impl VoiceApp {
                                 self.cfg.denoise = on;
                                 if let Some(s) = &self.session {
                                     s.shared.controls.denoise.store(on, Ordering::Relaxed);
+                                }
+                                let _ = self.cfg.save();
+                            }
+                        });
+                    });
+                });
+
+                Frame::NONE.fill(p.surface).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(12)).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new("Саундпад").size(14.0).color(p.text));
+                            ui.label(RichText::new("звуки по кнопке в звонке").size(12.0).color(p.dim));
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let mut on = Soundpad::enabled(&self.cfg);
+                            if widgets::toggle(ui, &mut on, &p) {
+                                Soundpad::set_enabled(&mut self.cfg, on);
+                                crate::log::info(&format!("модуль {}: {on}", self.soundpad.id()));
+                                if !on {
+                                    self.soundpad.drawer_open = false;
+                                    self.soundpad.trim = None;
+                                    self.soundpad.stop_all(self.session.as_ref().map(|s| s.shared.as_ref()));
                                 }
                                 let _ = self.cfg.save();
                             }
@@ -711,6 +779,26 @@ impl eframe::App for VoiceApp {
             Screen::Settings => self.settings_screen(ui),
             Screen::Main if self.session.is_some() => self.call_screen(ui),
             Screen::Main => self.login_screen(ui),
+        }
+        // Локальный проигрыватель саундпада: перерисовка ради подсветки и сброс в простое.
+        if self.soundpad.local.as_ref().is_some_and(|l| l.pad.any_active()) && !self.hidden {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+        if let Some(l) = &self.soundpad.local
+            && l.idle_for() > Duration::from_secs(10)
+        {
+            self.soundpad.local = None;
+        }
+        // Дефен глушит всё, что уже играет (кнопки при дефене заблокированы).
+        let deafened =
+            self.session.as_ref().is_some_and(|s| s.shared.controls.deafened.load(Ordering::Relaxed));
+        if deafened {
+            self.soundpad.stop_all(self.session.as_ref().map(|s| s.shared.as_ref()));
+        }
+        // Диалог обрезки саундпада поверх любого экрана.
+        if self.soundpad.trim.is_some() {
+            crate::soundpad::ui::trim_dialog(ui.ctx(), &mut self.soundpad, &mut self.cfg, deafened);
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         // Индикаторы живут только в звонке и в видимом окне; иначе перерисовка по событиям.
         if self.session.is_some() && !self.hidden {
