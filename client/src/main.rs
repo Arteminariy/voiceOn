@@ -7,6 +7,7 @@ mod bot;
 mod config;
 mod install;
 mod log;
+mod modules;
 mod session;
 mod single_instance;
 mod soundpad;
