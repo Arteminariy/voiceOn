@@ -111,9 +111,23 @@ fn resample(input: &[f32], from: u32) -> Result<Vec<f32>, String> {
         out.extend_from_slice(&block[0]);
         pos += n;
     }
-    // Синк-фильтр даёт задержку в начале и хвост нулей — срезаем до точной длины.
+    // Добиваем хвост sinc-фильтра тишиной, иначе короткие файлы теряют конец.
     let delay = rs.output_delay();
     let want = (input.len() as f64 * SAMPLE_RATE as f64 / from as f64).round() as usize;
+    let zeros = vec![0.0f32; chunk];
+    for _ in 0..8 {
+        if out.len() >= delay + want {
+            break;
+        }
+        let block = rs
+            .process_partial(Some(&[&zeros[..]]), None)
+            .map_err(|e| format!("ресемплинг: {e}"))?;
+        if block[0].is_empty() {
+            break;
+        }
+        out.extend_from_slice(&block[0]);
+    }
+    // Синк-фильтр даёт задержку в начале — срезаем до точной длины.
     let start = delay.min(out.len());
     let end = (start + want).min(out.len());
     Ok(out[start..end].to_vec())
@@ -139,10 +153,14 @@ pub fn peaks(samples: &[f32], buckets: usize) -> Vec<(f32, f32)> {
 }
 
 /// Обрезка [start, end) секунд (не длиннее MAX_CLIP_SECS), фейды, нормализация.
+/// Короче 100 мс — пустой клип (звонить с этим в слот бессмысленно).
 pub fn prepare_clip(source: &[f32], start: f32, end: f32) -> Vec<f32> {
     let dur = source.len() as f32 / SAMPLE_RATE as f32;
-    let start = start.clamp(0.0, dur);
-    let end = end.clamp(start + 0.1, dur).min(start + MAX_CLIP_SECS).min(dur);
+    if dur < 0.1 {
+        return Vec::new();
+    }
+    let start = start.clamp(0.0, dur - 0.1);
+    let end = end.clamp(start + 0.1, dur).min(start + MAX_CLIP_SECS);
     let (a, b) = ((start * SAMPLE_RATE as f32) as usize, (end * SAMPLE_RATE as f32) as usize);
     let mut clip = source[a.min(source.len())..b.min(source.len())].to_vec();
 
@@ -187,14 +205,22 @@ pub fn save_wav(samples: &[f32], path: &Path) -> Result<(), String> {
     w.finalize().map_err(|e| format!("wav: {e}"))
 }
 
-/// Читает WAV слота обратно в сэмплы.
+/// Читает WAV слота обратно в сэмплы; битый или усечённый файл — ошибка.
 pub fn load_wav(path: &Path) -> Result<Vec<f32>, String> {
     let r = hound::WavReader::open(path).map_err(|e| format!("wav: {e}"))?;
     let spec = r.spec();
     if spec.sample_rate != SAMPLE_RATE || spec.channels != 1 {
         return Err("не файл саундпада (нужен 48 кГц моно)".into());
     }
-    Ok(r.into_samples::<i16>().map_while(Result::ok).map(|s| s as f32 / 32768.0).collect())
+    let raw: Vec<i16> = r
+        .into_samples::<i16>()
+        .collect::<Result<Vec<i16>, _>>()
+        .map_err(|e| format!("wav: {e}"))?;
+    let out: Vec<f32> = raw.into_iter().map(|s| s as f32 / 32768.0).collect();
+    if out.len() as f32 / SAMPLE_RATE as f32 > MAX_CLIP_SECS + 1.0 {
+        return Err("файл слота длиннее положенного".into());
+    }
+    Ok(out)
 }
 
 /// Каталог со звуками слотов.
@@ -223,6 +249,11 @@ mod tests {
     }
 
     fn write_wav(path: &std::path::Path, channels: u16, rate: u32, secs: f32) {
+        let n = (rate as f32 * secs) as usize;
+        write_wav_samples(path, channels, rate, n);
+    }
+
+    fn write_wav_samples(path: &std::path::Path, channels: u16, rate: u32, samples: usize) {
         let spec = hound::WavSpec {
             channels,
             sample_rate: rate,
@@ -230,7 +261,7 @@ mod tests {
             sample_format: hound::SampleFormat::Int,
         };
         let mut w = hound::WavWriter::create(path, spec).unwrap();
-        for i in 0..(rate as f32 * secs) as usize {
+        for i in 0..samples {
             let s = ((i as f32 * 440.0 * std::f32::consts::TAU / rate as f32).sin() * 0.5 * 32767.0) as i16;
             for _ in 0..channels {
                 w.write_sample(s).unwrap();
@@ -283,6 +314,20 @@ mod tests {
     }
 
     #[test]
+    fn load_wav_rejects_truncated() {
+        let d = tmpdir("trunc");
+        let p = d.join("t.wav");
+        let src = sine(440.0, 48000, 0.1, 0.5);
+        save_wav(&src, &p).unwrap();
+        // Валидный заголовок, но данные обрезаны.
+        let mut bytes = std::fs::read(&p).unwrap();
+        bytes.truncate(bytes.len() - 100);
+        std::fs::write(&p, bytes).unwrap();
+        assert!(load_wav(&p).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn decode_wav_file() {
         let d = tmpdir("dec");
         let p = d.join("s.wav");
@@ -309,5 +354,36 @@ mod tests {
         let e = decode(&p).unwrap_err();
         assert!(e.contains("мин"), "{e}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn decode_short_file_keeps_length() {
+        let d = tmpdir("short");
+        let p = d.join("s.wav");
+        write_wav(&p, 1, 44100, 0.01); // 10 мс
+        let out = decode(&p).unwrap();
+        assert!((out.len() as i64 - 480).abs() <= 4, "{}", out.len());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn decode_tiny_file_not_empty() {
+        let d = tmpdir("tiny");
+        let p = d.join("t.wav");
+        write_wav_samples(&p, 1, 44100, 100); // 100 сэмплов
+        let out = decode(&p).unwrap();
+        assert!(out.len() >= 100, "{}", out.len());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn prepare_clip_tolerates_tiny_and_near_end() {        // Пустой и короче 100 мс — пустой клип, без паники.
+        assert!(prepare_clip(&[], 0.0, 1.0).is_empty());
+        assert!(prepare_clip(&vec![0.5; 480], 0.0, 1.0).is_empty()); // 10 мс
+        assert!(prepare_clip(&vec![0.5; 4799], 0.0, 1.0).is_empty()); // 99.9 мс
+        // Ровно 100 мс — уже валидно.
+        assert_eq!(prepare_clip(&vec![0.5; 4800], 0.0, 1.0).len(), 4800);
+        // start в последних 100 мс — отступает назад, не паникует.
+        assert_eq!(prepare_clip(&vec![0.5; 48000], 0.99, 1.0).len(), 4800);
     }
 }
