@@ -155,7 +155,7 @@ impl TxPipeline {
                 self.encode_and_send(&prev, self.frame_no.wrapping_sub(1));
                 self.prev_frame = prev;
             }
-            let mut frame = std::mem::take(&mut self.frame);
+            let frame = std::mem::take(&mut self.frame);
             if pad_send {
                 // Собираем в отдельном буфере: микрофонный кадр остаётся чистым для prev_frame.
                 let mut out = std::mem::take(&mut self.pad_frame);
