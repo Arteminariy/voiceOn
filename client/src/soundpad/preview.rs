@@ -1,39 +1,34 @@
-//! Предпрослушивание звука на устройстве вывода без звонка: обрезка в диалоге
-//! импорта и локальное проигрывание слотов на экране входа.
+//! Локальный проигрыватель саундпада: экран входа и предпрослушивание в диалоге
+//! обрезки. Один поток вывода; инстансы и громкость — те же примитивы ядра (`Pad`),
+//! что и в эфире, поэтому наложение, voice stealing и живая громкость совпадают.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 use ringbuf::HeapRb;
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
+use voiceon_core::pad::Pad;
 
-use crate::dsp::Resampler;
-use crate::mixer::SAMPLE_RATE;
 use crate::audio;
+use crate::dsp::Resampler;
+use crate::mixer::{FRAME_SAMPLES, SAMPLE_RATE};
 
-/// Играет `samples[start..end]` на устройство вывода; Drop останавливает.
-// Зовётся из UI саундпада (задачи 8–9 плана).
-#[allow(dead_code)]
-pub struct Preview {
+/// Локальный проигрыватель: поток вывода + поток-кормилец, миксующий инстансы.
+pub struct LocalPad {
+    /// Инстансы и громкость (атомик — слайдер действует на лету).
+    pub pad: Arc<Pad>,
     _stream: cpal::Stream,
     stop: Arc<AtomicBool>,
-    playing: Arc<AtomicBool>,
+    last_active: Arc<Mutex<Instant>>,
     feeder: Option<JoinHandle<()>>,
 }
 
-#[allow(dead_code)]
-impl Preview {
-    pub fn play(
-        output: Option<&str>,
-        samples: Arc<Vec<f32>>,
-        start: usize,
-        end: usize,
-        gain: f32,
-    ) -> Result<Preview, String> {
+impl LocalPad {
+    pub fn start(output: Option<&str>) -> Result<LocalPad, String> {
         let dev = audio::find_device(false, output)?;
         let cfg = audio::pick_config(&dev, false)?;
         let rate = cfg.sample_rate();
@@ -41,7 +36,8 @@ impl Preview {
 
         let (prod, cons) = HeapRb::<f32>::new(rate as usize / 2).split();
         let stop = Arc::new(AtomicBool::new(false));
-        let playing = Arc::new(AtomicBool::new(true));
+        let last_active = Arc::new(Mutex::new(Instant::now()));
+        let pad = Arc::new(Pad::new());
 
         let stream = match cfg.sample_format() {
             SampleFormat::F32 => build_output::<f32>(&dev, &cfg, channels, cons),
@@ -52,49 +48,48 @@ impl Preview {
         }?;
         stream.play().map_err(|e| e.to_string())?;
 
-        // Кормилец: 48 кГц → частота устройства, gain, в конце — стоп.
-        let (stop2, playing2) = (stop.clone(), playing.clone());
+        let (pad2, stop2, last2) = (pad.clone(), stop.clone(), last_active.clone());
         let feeder = std::thread::Builder::new()
-            .name("voiceon-preview".into())
+            .name("voiceon-soundpad".into())
             .spawn(move || {
                 let mut prod = prod;
                 let mut rs = Resampler::new(SAMPLE_RATE, rate);
-                let mut pos = start.min(samples.len());
-                let end = end.min(samples.len());
+                let mut frame = [0.0f32; FRAME_SAMPLES];
                 let mut resampled = Vec::with_capacity(2048);
-                while pos < end && !stop2.load(Ordering::Relaxed) {
-                    let n = 2048.min(end - pos);
+                let low_water = (rate as usize) / 50; // ~20 мс
+                while !stop2.load(Ordering::Relaxed) {
+                    if prod.occupied_len() >= low_water {
+                        std::thread::sleep(Duration::from_millis(3));
+                        continue;
+                    }
+                    frame.fill(0.0);
+                    pad2.mix_monitor(&mut frame, false);
+                    if pad2.any_active() {
+                        *last2.lock().unwrap() = Instant::now();
+                    }
                     resampled.clear();
-                    rs.process(&samples[pos..pos + n], &mut resampled);
-                    pos += n;
+                    rs.process(&frame, &mut resampled);
                     let mut i = 0;
                     while i < resampled.len() && !stop2.load(Ordering::Relaxed) {
-                        for s in &mut resampled[i..] {
-                            *s *= gain;
-                        }
                         i += prod.push_slice(&resampled[i..]);
                         if i < resampled.len() {
                             std::thread::sleep(Duration::from_millis(2));
                         }
                     }
                 }
-                // Даём остатку кольца проиграться, прежде чем погасить флаг.
-                while prod.occupied_len() > 0 && !stop2.load(Ordering::Relaxed) {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                playing2.store(false, Ordering::Relaxed);
             })
             .map_err(|e| e.to_string())?;
 
-        Ok(Preview { _stream: stream, stop, playing, feeder: Some(feeder) })
+        Ok(LocalPad { pad, _stream: stream, stop, last_active, feeder: Some(feeder) })
     }
 
-    pub fn is_playing(&self) -> bool {
-        self.playing.load(Ordering::Relaxed)
+    /// Сколько уже не играет ни один инстанс (для сброса потока в простое).
+    pub fn idle_for(&self) -> Duration {
+        self.last_active.lock().unwrap().elapsed()
     }
 }
 
-impl Drop for Preview {
+impl Drop for LocalPad {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.feeder.take() {

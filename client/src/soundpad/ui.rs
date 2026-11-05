@@ -23,11 +23,6 @@ enum Act {
 
 /// Дровер над футером. `session: None` на экране входа — звуки играют только локально.
 pub fn drawer(ui: &mut Ui, pad: &mut Soundpad, session: Option<&Session>, cfg: &mut Config, p: &Palette) {
-    // Доигравшее предпрослушивание убираем, чтобы подсветка слота погасла.
-    if pad.preview.as_ref().is_some_and(|pr| !pr.is_playing()) {
-        pad.preview = None;
-        pad.preview_slot = None;
-    }
     let deaf = session.map(|s| s.shared.controls.deafened.load(Ordering::Relaxed)).unwrap_or(false);
 
     ui.spacing_mut().item_spacing.y = 8.0;
@@ -43,6 +38,9 @@ pub fn drawer(ui: &mut Ui, pad: &mut Soundpad, session: Option<&Session>, cfg: &
                 if let Some(s) = session {
                     s.shared.pad.set_gain(v);
                 }
+                if let Some(l) = &pad.local {
+                    l.pad.set_gain(v);
+                }
                 let _ = cfg.save();
             }
         });
@@ -56,7 +54,7 @@ pub fn drawer(ui: &mut Ui, pad: &mut Soundpad, session: Option<&Session>, cfg: &
             if pad.slots[i].is_some() {
                 let active = match session {
                     Some(s) => s.shared.pad.slot_active(i),
-                    None => pad.preview_slot == Some(i) && pad.preview.is_some(),
+                    None => pad.local.as_ref().is_some_and(|l| l.pad.slot_active(i)),
                 };
                 let resp = slot_button(ui, &pad.slots[i].as_ref().unwrap().name, i, active, deaf, p);
                 if resp.clicked() {
@@ -209,7 +207,8 @@ enum Dlg {
 }
 
 /// Модальный диалог обрезки: волна, ручки начала/конца, прослушивание, «Добавить».
-pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config) {
+/// При `deaf` (в звонке с выключенным звуком) прослушивание заблокировано.
+pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, deaf: bool) {
     let Some(trim) = &mut pad.trim else { return };
 
     // Ответ фонового декода.
@@ -220,10 +219,14 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config) {
         match r {
             Ok((source, peaks)) => {
                 let dur = source.len() as f32 / SAMPLE_RATE as f32;
-                trim.source = source;
-                trim.peaks = peaks;
-                trim.start = 0.0;
-                trim.end = dur.min(import::MAX_CLIP_SECS);
+                if dur < 0.1 {
+                    trim.error = Some("слишком короткий файл — нужно хотя бы 0,1 с".into());
+                } else {
+                    trim.source = source;
+                    trim.peaks = peaks;
+                    trim.start = 0.0;
+                    trim.end = dur.min(import::MAX_CLIP_SECS);
+                }
             }
             Err(e) => trim.error = Some(e),
         }
@@ -276,7 +279,10 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config) {
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                if ui.button("Прослушать").clicked() {
+                if ui.add_enabled(!deaf, egui::Button::new("Прослушать"))
+                    .on_hover_text(if deaf { "Включи звук, чтобы слушать" } else { "" })
+                    .clicked()
+                {
                     let s = (trim.start * SAMPLE_RATE as f32) as usize;
                     let e = (trim.end * SAMPLE_RATE as f32) as usize;
                     action = Dlg::Preview(s, e);
@@ -294,15 +300,20 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config) {
         Dlg::Preview(s, e) => {
             if let Some(trim) = &pad.trim {
                 let clip = std::sync::Arc::new(trim.source[s.min(trim.source.len())..e.min(trim.source.len())].to_vec());
-                let n = clip.len();
-                match crate::soundpad::preview::Preview::play(cfg.output_device.as_deref(), clip, 0, n, cfg.soundpad.volume) {
-                    Ok(p) => pad.preview = Some(p),
-                    Err(e) => {
-                        if let Some(trim) = &mut pad.trim {
-                            trim.error = Some(e);
+                if pad.local.is_none() {
+                    match crate::soundpad::preview::LocalPad::start(cfg.output_device.as_deref()) {
+                        Ok(l) => pad.local = Some(l),
+                        Err(e) => {
+                            if let Some(trim) = &mut pad.trim {
+                                trim.error = Some(e);
+                            }
+                            return;
                         }
                     }
                 }
+                let local = pad.local.as_ref().unwrap();
+                local.pad.set_gain(cfg.soundpad.volume);
+                local.pad.play(usize::MAX, clip); // предпрослушивание — вне нумерации слотов
             }
         }
         Dlg::Add => {

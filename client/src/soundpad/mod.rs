@@ -12,7 +12,7 @@ use voiceon_core::net::Shared;
 
 use crate::config::Config;
 use crate::modules::Module;
-use crate::soundpad::preview::Preview;
+use crate::soundpad::preview::LocalPad;
 
 /// Слотов ровно столько — решение из спеки.
 pub const SLOT_COUNT: usize = 5;
@@ -40,20 +40,13 @@ pub struct Soundpad {
     pub slots: [Option<Slot>; SLOT_COUNT],
     pub drawer_open: bool,
     pub trim: Option<TrimState>,
-    pub preview: Option<Preview>,
-    /// Какой слот играет через предпрослушивание (подсветка на экране входа).
-    pub preview_slot: Option<usize>,
+    /// Локальный проигрыватель (экран входа, предпрослушивание); ленивый, сбрасывается в простое.
+    pub local: Option<LocalPad>,
 }
 
 impl Default for Soundpad {
     fn default() -> Soundpad {
-        Soundpad {
-            slots: std::array::from_fn(|_| None),
-            drawer_open: false,
-            trim: None,
-            preview: None,
-            preview_slot: None,
-        }
+        Soundpad { slots: std::array::from_fn(|_| None), drawer_open: false, trim: None, local: None }
     }
 }
 
@@ -75,7 +68,7 @@ impl Soundpad {
                 }
             }
         }
-        Soundpad { slots, drawer_open: false, trim: None, preview: None, preview_slot: None }
+        Soundpad { slots, drawer_open: false, trim: None, local: None }
     }
 
     pub fn remove(&mut self, cfg: &mut Config, dir: &Path, slot: usize) {
@@ -118,26 +111,32 @@ impl Soundpad {
         }
     }
 
-    /// Только локально (экран входа): играет через предпрослушивание.
+    /// Только локально (экран входа): инстанс в локальном проигрывателе.
+    /// Наложение и лимит 4 на слот — те же, что в эфире.
     pub fn play_local(&mut self, cfg: &Config, slot: usize) {
-        if let Some(s) = self.slots.get(slot).and_then(|s| s.as_ref()) {
-            let len = s.samples.len();
-            match Preview::play(cfg.output_device.as_deref(), s.samples.clone(), 0, len, cfg.soundpad.volume) {
-                Ok(p) => {
-                    self.preview = Some(p);
-                    self.preview_slot = Some(slot);
+        let Some(s) = self.slots.get(slot).and_then(|s| s.as_ref()) else { return };
+        if self.local.is_none() {
+            match LocalPad::start(cfg.output_device.as_deref()) {
+                Ok(l) => self.local = Some(l),
+                Err(e) => {
+                    crate::log::info(&format!("саундпад: {e}"));
+                    return;
                 }
-                Err(e) => crate::log::info(&format!("саундпад: {e}")),
             }
         }
+        let local = self.local.as_ref().unwrap();
+        local.pad.set_gain(cfg.soundpad.volume);
+        local.pad.play(slot, s.samples.clone());
     }
 
-    /// Глушит всё: очереди ядра (в звонке) и локальное предпрослушивание.
+    /// Глушит всё: очереди ядра (в звонке) и локальный проигрыватель.
     pub fn stop_all(&mut self, shared: Option<&Shared>) {
         if let Some(sh) = shared {
             sh.pad.stop_all();
         }
-        self.preview = None;
+        if let Some(l) = &self.local {
+            l.pad.stop_all();
+        }
     }
 }
 

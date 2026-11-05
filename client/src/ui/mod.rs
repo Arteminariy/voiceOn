@@ -592,6 +592,8 @@ impl VoiceApp {
                                 crate::log::info(&format!("модуль {}: {on}", self.soundpad.id()));
                                 if !on {
                                     self.soundpad.drawer_open = false;
+                                    self.soundpad.trim = None;
+                                    self.soundpad.stop_all(self.session.as_ref().map(|s| s.shared.as_ref()));
                                 }
                                 let _ = self.cfg.save();
                             }
@@ -778,16 +780,24 @@ impl eframe::App for VoiceApp {
             Screen::Main if self.session.is_some() => self.call_screen(ui),
             Screen::Main => self.login_screen(ui),
         }
-        // На экране входа перерисовываемся, пока играет предпрослушивание (подсветка слота).
-        if self.session.is_none()
-            && !self.hidden
-            && self.soundpad.preview.as_ref().is_some_and(|p| p.is_playing())
-        {
+        // Локальный проигрыватель саундпада: перерисовка ради подсветки и сброс в простое.
+        if self.soundpad.local.as_ref().is_some_and(|l| l.pad.any_active()) && !self.hidden {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+        if let Some(l) = &self.soundpad.local
+            && l.idle_for() > Duration::from_secs(10)
+        {
+            self.soundpad.local = None;
+        }
+        // Дефен глушит всё, что уже играет (кнопки при дефене заблокированы).
+        let deafened =
+            self.session.as_ref().is_some_and(|s| s.shared.controls.deafened.load(Ordering::Relaxed));
+        if deafened {
+            self.soundpad.stop_all(self.session.as_ref().map(|s| s.shared.as_ref()));
         }
         // Диалог обрезки саундпада поверх любого экрана.
         if self.soundpad.trim.is_some() {
-            crate::soundpad::ui::trim_dialog(ui.ctx(), &mut self.soundpad, &mut self.cfg);
+            crate::soundpad::ui::trim_dialog(ui.ctx(), &mut self.soundpad, &mut self.cfg, deafened);
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         // Индикаторы живут только в звонке и в видимом окне; иначе перерисовка по событиям.
