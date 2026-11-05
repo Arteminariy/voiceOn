@@ -195,3 +195,199 @@ fn start_import(pad: &mut Soundpad, slot: usize) {
         rx: Some(rx),
     });
 }
+
+// ---------- диалог обрезки ----------
+
+use crate::mixer::SAMPLE_RATE;
+use crate::ui::theme::pal;
+
+enum Dlg {
+    None,
+    Cancel,
+    Preview(usize, usize),
+    Add,
+}
+
+/// Модальный диалог обрезки: волна, ручки начала/конца, прослушивание, «Добавить».
+pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config) {
+    let Some(trim) = &mut pad.trim else { return };
+
+    // Ответ фонового декода.
+    if let Some(rx) = &trim.rx
+        && let Ok(r) = rx.try_recv()
+    {
+        trim.busy = false;
+        match r {
+            Ok((source, peaks)) => {
+                let dur = source.len() as f32 / SAMPLE_RATE as f32;
+                trim.source = source;
+                trim.peaks = peaks;
+                trim.start = 0.0;
+                trim.end = dur.min(import::MAX_CLIP_SECS);
+            }
+            Err(e) => trim.error = Some(e),
+        }
+        trim.rx = None;
+    }
+
+    let title = trim.name.clone();
+    let mut open = true;
+    let mut action = Dlg::None;
+    egui::Window::new(title)
+        .id(egui::Id::unique("soundpad_trim"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .open(&mut open)
+        .show(ctx, |ui| {
+            let p = pal(ui);
+            if trim.busy {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label(RichText::new("Загружаю…").color(p.muted));
+                });
+                return;
+            }
+            if trim.source.is_empty() {
+                if let Some(e) = &trim.error {
+                    ui.label(RichText::new(e).color(p.err_text));
+                }
+                if ui.button("Закрыть").clicked() {
+                    action = Dlg::Cancel;
+                }
+                return;
+            }
+            waveform(ui, trim, &p);
+            ui.add_space(4.0);
+            let len = trim.end - trim.start;
+            ui.label(
+                RichText::new(format!(
+                    "{} → {} · длина {:.1} с (максимум {:.0} с)",
+                    fmt_time(trim.start),
+                    fmt_time(trim.end),
+                    len,
+                    import::MAX_CLIP_SECS
+                ))
+                .size(12.0)
+                .color(p.dim),
+            );
+            if let Some(e) = &trim.error {
+                ui.label(RichText::new(e).size(12.0).color(p.err_text));
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Прослушать").clicked() {
+                    let s = (trim.start * SAMPLE_RATE as f32) as usize;
+                    let e = (trim.end * SAMPLE_RATE as f32) as usize;
+                    action = Dlg::Preview(s, e);
+                }
+                if ui.button("Отмена").clicked() {
+                    action = Dlg::Cancel;
+                }
+                if ui.button(RichText::new("Добавить").color(p.on_accent)).clicked() {
+                    action = Dlg::Add;
+                }
+            });
+        });
+
+    match action {
+        Dlg::Preview(s, e) => {
+            if let Some(trim) = &pad.trim {
+                let clip = std::sync::Arc::new(trim.source[s.min(trim.source.len())..e.min(trim.source.len())].to_vec());
+                let n = clip.len();
+                match crate::soundpad::preview::Preview::play(cfg.output_device.as_deref(), clip, 0, n, cfg.soundpad.volume) {
+                    Ok(p) => pad.preview = Some(p),
+                    Err(e) => {
+                        if let Some(trim) = &mut pad.trim {
+                            trim.error = Some(e);
+                        }
+                    }
+                }
+            }
+        }
+        Dlg::Add => {
+            if let Some(dir) = import::sounds_dir() {
+                let trim = pad.trim.as_ref().unwrap();
+                let (slot, name) = (trim.target_slot, trim.name.clone());
+                match pad.import_into(cfg, &dir, slot, name) {
+                    Ok(()) => pad.trim = None,
+                    Err(e) => {
+                        if let Some(trim) = &mut pad.trim {
+                            trim.error = Some(e);
+                        }
+                    }
+                }
+            }
+        }
+        Dlg::Cancel => pad.trim = None,
+        Dlg::None => {}
+    }
+    if !open {
+        pad.trim = None;
+    }
+}
+
+/// Полоса волны с ручками начала и конца выбранного куска.
+fn waveform(ui: &mut Ui, trim: &mut TrimState, p: &Palette) {
+    let dur = trim.source.len() as f32 / SAMPLE_RATE as f32;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width().max(280.0), 80.0), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same(8), p.surface);
+
+    // Волна.
+    let n = trim.peaks.len();
+    if n > 0 {
+        let yc = rect.center().y;
+        for (i, &(lo, hi)) in trim.peaks.iter().enumerate() {
+            let x = rect.left() + rect.width() * (i as f32 + 0.5) / n as f32;
+            let h = ((hi - lo) / 2.0).max(0.003) * (rect.height() - 10.0) / 2.0;
+            painter.line_segment([Pos2::new(x, yc - h), Pos2::new(x, yc + h)], Stroke::new(1.0, p.muted));
+        }
+    }
+
+    // Выделение выбранного куска.
+    let x0 = rect.left() + rect.width() * (trim.start / dur).clamp(0.0, 1.0);
+    let x1 = rect.left() + rect.width() * (trim.end / dur).clamp(0.0, 1.0);
+    painter.rect_filled(
+        Rect::from_min_max(Pos2::new(x0, rect.top()), Pos2::new(x1, rect.bottom())),
+        CornerRadius::same(4),
+        p.accent.gamma_multiply(0.25),
+    );
+
+    // Ручки: тонкие вертикали, таскаются мышью.
+    let clamp_range = |start: &mut f32, end: &mut f32| {
+        *start = start.clamp(0.0, dur);
+        *end = end.clamp(0.0, dur);
+        if *end - *start > import::MAX_CLIP_SECS {
+            *end = *start + import::MAX_CLIP_SECS;
+        }
+        if *end - *start < 0.1 {
+            *end = (*start + 0.1).min(dur);
+        }
+    };
+    let to_sec = |dx: f32| dx / rect.width() * dur;
+    let h_start = ui.interact(Rect::from_min_max(Pos2::new(x0 - 5.0, rect.top()), Pos2::new(x0 + 5.0, rect.bottom())), ui.scope_id().with("trim_start"), Sense::drag());
+    if h_start.dragged() {
+        trim.start = (trim.start + to_sec(h_start.drag_delta().x)).min(trim.end - 0.1);
+        clamp_range(&mut trim.start, &mut trim.end);
+    }
+    let h_end = ui.interact(Rect::from_min_max(Pos2::new(x1 - 5.0, rect.top()), Pos2::new(x1 + 5.0, rect.bottom())), ui.scope_id().with("trim_end"), Sense::drag());
+    if h_end.dragged() {
+        trim.end = (trim.end + to_sec(h_end.drag_delta().x)).max(trim.start + 0.1);
+        clamp_range(&mut trim.start, &mut trim.end);
+    }
+    for (x, hovered) in [(x0, h_start.hovered() || h_start.dragged()), (x1, h_end.hovered() || h_end.dragged())] {
+        painter.line_segment(
+            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+            Stroke::new(if hovered { 3.0 } else { 2.0 }, p.text),
+        );
+    }
+    if h_start.hovered() || h_end.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+}
+
+fn fmt_time(sec: f32) -> String {
+    format!("{}:{:04.1}", (sec as u32) / 60, sec % 60.0)
+}
+

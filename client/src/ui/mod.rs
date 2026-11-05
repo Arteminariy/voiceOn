@@ -255,7 +255,7 @@ impl VoiceApp {
         egui::Panel::bottom("login_footer").show_separator_line(false).frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(0, 10))).show(ui, |ui| {
             ui.vertical_centered(|ui| version_label(ui, &p, "v", &self.update));
         });
-        if self.cfg.soundpad.enabled && self.soundpad.drawer_open {
+        if Soundpad::enabled(&self.cfg) && self.soundpad.drawer_open {
             egui::Panel::bottom("soundpad_drawer")
                 .show_separator_line(true)
                 .frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(16, 10)))
@@ -273,7 +273,7 @@ impl VoiceApp {
                         if widgets::icon_button(ui, ph::SLIDERS_HORIZONTAL, 36.0, p.muted, "Настройки").clicked() {
                             self.screen = Screen::Settings;
                         }
-                        if self.cfg.soundpad.enabled {
+                        if Soundpad::enabled(&self.cfg) {
                             let color = if self.soundpad.drawer_open { p.accent } else { p.muted };
                             if widgets::icon_button(ui, ph::MUSIC_NOTES, 36.0, color, "Саундпад").clicked() {
                                 self.soundpad.drawer_open = !self.soundpad.drawer_open;
@@ -345,7 +345,7 @@ impl VoiceApp {
 
         let tall = ui.ctx().content_rect().height() >= 400.0;
         let pad = if tall { 16 } else { 8 };
-        let pad_on = self.cfg.soundpad.enabled;
+        let pad_on = Soundpad::enabled(&self.cfg);
         let mut toggle_drawer = false;
         egui::Panel::bottom("call_footer")
             .show_separator_line(true)
@@ -382,7 +382,7 @@ impl VoiceApp {
                 });
             });
 
-        if self.cfg.soundpad.enabled && self.soundpad.drawer_open {
+        if Soundpad::enabled(&self.cfg) && self.soundpad.drawer_open {
             egui::Panel::bottom("soundpad_drawer")
                 .show_separator_line(true)
                 .frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(16, 10)))
@@ -586,9 +586,10 @@ impl VoiceApp {
                             ui.label(RichText::new("звуки по кнопке в звонке").size(12.0).color(p.dim));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            let mut on = self.cfg.soundpad.enabled;
+                            let mut on = Soundpad::enabled(&self.cfg);
                             if widgets::toggle(ui, &mut on, &p) {
                                 Soundpad::set_enabled(&mut self.cfg, on);
+                                crate::log::info(&format!("модуль {}: {on}", self.soundpad.id()));
                                 if !on {
                                     self.soundpad.drawer_open = false;
                                 }
@@ -782,6 +783,11 @@ impl eframe::App for VoiceApp {
             && !self.hidden
             && self.soundpad.preview.as_ref().is_some_and(|p| p.is_playing())
         {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+        // Диалог обрезки саундпада поверх любого экрана.
+        if self.soundpad.trim.is_some() {
+            crate::soundpad::ui::trim_dialog(ui.ctx(), &mut self.soundpad, &mut self.cfg);
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
         // Индикаторы живут только в звонке и в видимом окне; иначе перерисовка по событиям.

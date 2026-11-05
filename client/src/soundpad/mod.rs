@@ -88,6 +88,26 @@ impl Soundpad {
         let _ = cfg.save();
     }
 
+    /// Завершает диалог обрезки: режет source из `trim`, нормализует, пишет WAV, обновляет слот.
+    pub fn import_into(&mut self, cfg: &mut Config, dir: &Path, slot: usize, name: String) -> Result<(), String> {
+        if slot >= SLOT_COUNT {
+            return Err("нет такого слота".into());
+        }
+        let Some(trim) = &self.trim else {
+            return Err("нет открытого импорта".into());
+        };
+        let clip = import::prepare_clip(&trim.source, trim.start, trim.end);
+        if clip.is_empty() {
+            return Err("пустой кусок".into());
+        }
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        import::save_wav(&clip, &dir.join(format!("slot_{slot}.wav")))?;
+        self.slots[slot] = Some(Slot { name: name.clone(), samples: Arc::new(clip) });
+        cfg.soundpad.slots.retain(|s| s.slot != slot);
+        cfg.soundpad.slots.push(crate::config::SlotConfig { slot, name });
+        cfg.save()
+    }
+
     /// Эфир + локальный мониторинг (в звонке); при дефене и без слота — no-op.
     pub fn play(&self, shared: &Shared, slot: usize) {
         if shared.controls.deafened.load(Ordering::Relaxed) {
