@@ -30,7 +30,11 @@ pub fn drawer(ui: &mut Ui, pad: &mut Soundpad, session: Option<&Session>, cfg: &
         ui.label(RichText::new("САУНДПАД").size(12.0).font(semibold(12.0)).color(p.muted));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             let stop = egui::Button::new(RichText::new("Стоп").size(12.0).color(p.danger));
-            if ui.add(stop).on_hover_text("Остановить все звуки").clicked() {
+            if ui.add(stop)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Остановить все звуки")
+                .clicked()
+            {
                 pad.stop_all(session.map(|s| s.shared.as_ref()));
             }
             let mut v = cfg.soundpad.volume;
