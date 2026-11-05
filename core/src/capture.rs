@@ -28,6 +28,9 @@ pub struct TxPipeline {
     prev_frame: Vec<f32>,
     frame_open: bool,
     was_sending: bool,
+    /// Отправлялся ли голос в прошлом кадре — pre-roll смотрит сюда, а не на was_sending,
+    /// чтобы саундпад не подавлял pre-roll и не марал prev_frame.
+    voice_was_sending: bool,
     frame_no: u32,
     level_acc: f32,
     level_n: u32,
@@ -36,6 +39,9 @@ pub struct TxPipeline {
     packet: Vec<u8>,
     /// Буфер кадра саундпада: сюда миксуются инстансы перед отправкой.
     pad_buf: [f32; FRAME_SAMPLES],
+    /// Отдельный буфер смешанного кадра голос+саундпад, чтобы микрофонный кадр
+    /// оставался чистым для prev_frame.
+    pad_frame: Vec<f32>,
     /// Без шумодава и VAD — для бота-тестера.
     raw: bool,
 }
@@ -70,12 +76,14 @@ impl TxPipeline {
             prev_frame: vec![0.0; FRAME_SAMPLES],
             frame_open: false,
             was_sending: false,
+            voice_was_sending: false,
             frame_no: 0,
             level_acc: 0.0,
             level_n: 0,
             prob_acc: 0.0,
             packet: vec![0u8; 1275],
             pad_buf: [0.0; FRAME_SAMPLES],
+            pad_frame: Vec::with_capacity(FRAME_SAMPLES),
             raw,
         })
     }
@@ -139,22 +147,32 @@ impl TxPipeline {
         let send = voice_send || pad_send;
 
         if send {
-            // Pre-roll: на открытии гейта шлём и предыдущий кадр, чтобы не съесть начало слова.
-            if voice_send && !self.was_sending && !self.raw {
+            // Pre-roll по открытию именно голосового гейта: предыдущий микрофонный кадр.
+            // Во время саундпада этот кадр уже ушёл (с нулями вместо голоса) — получатель
+            // отбросит его как дубликат, хуже не будет.
+            if voice_send && !self.voice_was_sending && !self.raw {
                 let prev = std::mem::take(&mut self.prev_frame);
                 self.encode_and_send(&prev, self.frame_no.wrapping_sub(1));
                 self.prev_frame = prev;
             }
             let mut frame = std::mem::take(&mut self.frame);
-            if !voice_send {
-                frame.fill(0.0); // микрофон молчит/замьючен — шлём только саундпад
-            }
             if pad_send {
-                for (o, &p) in frame.iter_mut().zip(self.pad_buf.iter()) {
+                // Собираем в отдельном буфере: микрофонный кадр остаётся чистым для prev_frame.
+                let mut out = std::mem::take(&mut self.pad_frame);
+                out.clear();
+                if voice_send {
+                    out.extend_from_slice(&frame);
+                } else {
+                    out.resize(FRAME_SAMPLES, 0.0); // микрофон молчит/замьючен — только саундпад
+                }
+                for (o, &p) in out.iter_mut().zip(self.pad_buf.iter()) {
                     *o = soft_clip(*o + p);
                 }
+                self.encode_and_send(&out, self.frame_no);
+                self.pad_frame = out;
+            } else {
+                self.encode_and_send(&frame, self.frame_no);
             }
-            self.encode_and_send(&frame, self.frame_no);
             self.frame = frame;
         }
         self.pad_buf = [0.0; FRAME_SAMPLES];
@@ -175,6 +193,7 @@ impl TxPipeline {
         }
 
         self.was_sending = send;
+        self.voice_was_sending = voice_send;
         self.frame_open = false;
         std::mem::swap(&mut self.prev_frame, &mut self.frame);
         self.frame.clear();
@@ -262,5 +281,37 @@ mod tests {
         shared.pad.play(0, Arc::new(vec![0.5; 960]));
         push_silence(&mut tx);
         assert!(!recv_voice(&recv, &crypto));
+    }
+
+    #[test]
+    fn pad_only_send_keeps_prev_frame_mic_only() {
+        let (recv, crypto, mut tx, shared) = loopback();
+        shared.controls.connected.store(true, Ordering::Relaxed);
+        let (_r2, _c2, mut tx2, shared2) = loopback();
+        shared2.controls.connected.store(true, Ordering::Relaxed);
+        shared.pad.play(0, Arc::new(vec![0.5; 960]));
+        // «Шум» в микрофон, гейт закрыт; у первого конвейера играет саундпад.
+        let noise: Vec<f32> = (0..960).map(|i| ((i * 37 % 100) as f32 - 50.0) / 400.0).collect();
+        tx.push(&noise);
+        tx2.push(&noise);
+        assert!(recv_voice(&recv, &crypto), "саундпад должен был уйти в эфир");
+        assert_eq!(tx.prev_frame, tx2.prev_frame, "prev_frame замарался саундпадом");
+    }
+
+    #[test]
+    fn pad_packet_carries_decodable_sound() {
+        let (recv, crypto, mut tx, shared) = loopback();
+        shared.controls.connected.store(true, Ordering::Relaxed);
+        shared.pad.play(0, Arc::new(vec![0.5; 960]));
+        push_silence(&mut tx);
+        let mut buf = [0u8; 2048];
+        let n = recv.recv(&mut buf).expect("voice-пакет не пришёл");
+        let (h, payload) = crypto.open(&buf[..n]).unwrap();
+        assert!(matches!(h.kind, Kind::Voice));
+        let (_, data) = voiceon_proto::decode_voice(&payload).unwrap();
+        let mut dec = opus::Decoder::new(48_000, opus::Channels::Mono).unwrap();
+        let mut out = vec![0.0f32; 960];
+        let n = dec.decode_float(data, &mut out, false).unwrap();
+        assert!(out[..n].iter().any(|s| s.abs() > 0.05), "в пакете тишина");
     }
 }
