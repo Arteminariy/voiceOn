@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 use nnnoiseless::DenoiseState;
 use voiceon_proto::{Kind, encode_voice};
 
-use crate::dsp::{Passthrough, Processor, TxGate, VadGate, rms};
+use crate::dsp::{Passthrough, Processor, TxGate, VadGate, rms, soft_clip};
 use crate::mixer::{FRAME_SAMPLES, SAMPLE_RATE};
 use crate::net::{Link, Shared};
 
@@ -34,6 +34,8 @@ pub struct TxPipeline {
     /// Максимум вероятности речи за текущий 20-мс кадр.
     prob_acc: f32,
     packet: Vec<u8>,
+    /// Буфер кадра саундпада: сюда миксуются инстансы перед отправкой.
+    pad_buf: [f32; FRAME_SAMPLES],
     /// Без шумодава и VAD — для бота-тестера.
     raw: bool,
 }
@@ -73,6 +75,7 @@ impl TxPipeline {
             level_n: 0,
             prob_acc: 0.0,
             packet: vec![0u8; 1275],
+            pad_buf: [0.0; FRAME_SAMPLES],
             raw,
         })
     }
@@ -124,22 +127,37 @@ impl TxPipeline {
 
     fn finish_frame(&mut self) {
         self.frame_no = self.frame_no.wrapping_add(1);
-        let muted = self.shared.controls.mic_muted.load(Ordering::Relaxed)
-            || self.shared.controls.deafened.load(Ordering::Relaxed);
+        let mic_muted = self.shared.controls.mic_muted.load(Ordering::Relaxed);
+        let deafened = self.shared.controls.deafened.load(Ordering::Relaxed);
+        let muted = mic_muted || deafened;
         let connected = self.shared.controls.connected.load(Ordering::Relaxed);
-        let send = self.frame_open && !muted && connected;
+        let voice_send = self.frame_open && !muted && connected;
+        // Саундпад идёт мимо мьюта микрофона, но не мимо дефена и дисконнекта.
+        // При дефене/дисконнекте очередь дренируется молча, чтобы таймлайн не вставал.
+        let pad_active = self.shared.pad.mix_tx(&mut self.pad_buf, deafened || !connected);
+        let pad_send = pad_active && connected && !deafened;
+        let send = voice_send || pad_send;
 
         if send {
             // Pre-roll: на открытии гейта шлём и предыдущий кадр, чтобы не съесть начало слова.
-            if !self.was_sending && !self.raw {
+            if voice_send && !self.was_sending && !self.raw {
                 let prev = std::mem::take(&mut self.prev_frame);
                 self.encode_and_send(&prev, self.frame_no.wrapping_sub(1));
                 self.prev_frame = prev;
             }
-            let frame = std::mem::take(&mut self.frame);
+            let mut frame = std::mem::take(&mut self.frame);
+            if !voice_send {
+                frame.fill(0.0); // микрофон молчит/замьючен — шлём только саундпад
+            }
+            if pad_send {
+                for (o, &p) in frame.iter_mut().zip(self.pad_buf.iter()) {
+                    *o = soft_clip(*o + p);
+                }
+            }
             self.encode_and_send(&frame, self.frame_no);
             self.frame = frame;
         }
+        self.pad_buf = [0.0; FRAME_SAMPLES];
 
         if self.level_n >= 5 || send != self.was_sending {
             let mut st = self.shared.state.lock().unwrap();
@@ -171,5 +189,78 @@ impl TxPipeline {
             self.link.send(Kind::Voice, &payload);
             self.shared.tx_packets.fetch_add(1, Ordering::Relaxed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::{Link, Shared};
+    use std::collections::HashMap;
+    use std::net::UdpSocket;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use voiceon_proto::Crypto;
+
+    /// Приёмный сокет + конвейер, шлющий в него через настоящий Link.
+    fn loopback() -> (UdpSocket, Crypto, TxPipeline, Arc<Shared>) {
+        let recv = UdpSocket::bind("127.0.0.1:0").unwrap();
+        recv.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let link =
+            Arc::new(Link::new(Crypto::from_passphrase("t"), recv.local_addr().unwrap()).unwrap());
+        let shared = Shared::new(HashMap::new(), 0.6, Arc::new(|| {}));
+        let tx = TxPipeline::new(link, shared.clone(), 32_000, 10, false).unwrap();
+        (recv, Crypto::from_passphrase("t"), tx, shared)
+    }
+
+    fn recv_voice(recv: &UdpSocket, crypto: &Crypto) -> bool {
+        let mut buf = [0u8; 2048];
+        match recv.recv(&mut buf) {
+            Ok(n) => crypto.open(&buf[..n]).is_some_and(|(h, _)| matches!(h.kind, Kind::Voice)),
+            Err(_) => false,
+        }
+    }
+
+    /// Тишина в микрофон: гейт закрыт, голос не отправляется.
+    fn push_silence(tx: &mut TxPipeline) {
+        tx.push(&[0.0; 960]);
+        tx.push(&[0.0; 960]);
+    }
+
+    #[test]
+    fn pad_forces_send_when_gate_closed() {
+        let (recv, crypto, mut tx, shared) = loopback();
+        shared.controls.connected.store(true, Ordering::Relaxed);
+        shared.pad.play(0, Arc::new(vec![0.5; 960]));
+        push_silence(&mut tx);
+        assert!(recv_voice(&recv, &crypto));
+    }
+
+    #[test]
+    fn mic_mute_does_not_block_pad() {
+        let (recv, crypto, mut tx, shared) = loopback();
+        shared.controls.connected.store(true, Ordering::Relaxed);
+        shared.controls.mic_muted.store(true, Ordering::Relaxed);
+        shared.pad.play(0, Arc::new(vec![0.5; 960]));
+        push_silence(&mut tx);
+        assert!(recv_voice(&recv, &crypto));
+    }
+
+    #[test]
+    fn deafen_blocks_pad() {
+        let (recv, crypto, mut tx, shared) = loopback();
+        shared.controls.connected.store(true, Ordering::Relaxed);
+        shared.controls.deafened.store(true, Ordering::Relaxed);
+        shared.pad.play(0, Arc::new(vec![0.5; 960]));
+        push_silence(&mut tx);
+        assert!(!recv_voice(&recv, &crypto));
+    }
+
+    #[test]
+    fn disconnected_blocks_pad() {
+        let (recv, crypto, mut tx, shared) = loopback();
+        shared.pad.play(0, Arc::new(vec![0.5; 960]));
+        push_silence(&mut tx);
+        assert!(!recv_voice(&recv, &crypto));
     }
 }
