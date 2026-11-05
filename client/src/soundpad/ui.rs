@@ -2,7 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use eframe::egui::{self, Align, Align2, CornerRadius, Layout, Pos2, Rect, Response, RichText, Sense, Stroke, Ui, vec2};
+use eframe::egui::{self, Align, Align2, CornerRadius, Layout, Margin, Pos2, Rect, Response, RichText, Sense, Stroke, Ui, vec2};
 use egui_phosphor::regular as ph;
 
 use crate::config::Config;
@@ -29,9 +29,7 @@ pub fn drawer(ui: &mut Ui, pad: &mut Soundpad, session: Option<&Session>, cfg: &
     ui.horizontal(|ui| {
         ui.label(RichText::new("САУНДПАД").size(12.0).font(semibold(12.0)).color(p.muted));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let stop = egui::Button::new(
-                RichText::new(ph::STOP).font(crate::ui::theme::icon_font(14.0)).color(p.muted),
-            );
+            let stop = egui::Button::new(RichText::new("Стоп").size(12.0).color(p.danger));
             if ui.add(stop).on_hover_text("Остановить все звуки").clicked() {
                 pad.stop_all(session.map(|s| s.shared.as_ref()));
             }
@@ -200,7 +198,6 @@ fn start_import(pad: &mut Soundpad, slot: usize) {
 // ---------- диалог обрезки ----------
 
 use crate::mixer::SAMPLE_RATE;
-use crate::ui::theme::pal;
 
 enum Dlg {
     None,
@@ -239,14 +236,22 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, de
     let title = trim.name.clone();
     let mut open = true;
     let mut action = Dlg::None;
+    let p = crate::ui::theme::palette(ctx.theme() == egui::Theme::Dark);
     egui::Window::new(title)
         .id(egui::Id::unique("soundpad_trim"))
         .collapsible(false)
         .resizable(false)
+        .default_width(400.0)
         .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .frame(
+            egui::Frame::NONE
+                .fill(p.surface)
+                .stroke(Stroke::new(1.0, p.border_input))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(Margin::same(16)),
+        )
         .open(&mut open)
         .show(ctx, |ui| {
-            let p = pal(ui);
             if trim.busy {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new());
@@ -258,13 +263,15 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, de
                 if let Some(e) = &trim.error {
                     ui.label(RichText::new(e).color(p.err_text));
                 }
+                ui.add_space(6.0);
                 if ui.button("Закрыть").clicked() {
                     action = Dlg::Cancel;
                 }
                 return;
             }
+            ui.add_space(2.0);
             waveform(ui, trim, &p);
-            ui.add_space(4.0);
+            ui.add_space(10.0);
             let len = trim.end - trim.start;
             ui.label(
                 RichText::new(format!(
@@ -278,9 +285,10 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, de
                 .color(p.dim),
             );
             if let Some(e) = &trim.error {
+                ui.add_space(4.0);
                 ui.label(RichText::new(e).size(12.0).color(p.err_text));
             }
-            ui.add_space(4.0);
+            ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if ui.add_enabled(!deaf, egui::Button::new("Прослушать"))
                     .on_hover_text(if deaf { "Включи звук, чтобы слушать" } else { "" })
@@ -297,6 +305,7 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, de
                     action = Dlg::Add;
                 }
             });
+            ui.add_space(2.0);
         });
 
     match action {
