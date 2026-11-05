@@ -9,6 +9,7 @@ mod install;
 mod log;
 mod session;
 mod single_instance;
+mod soundpad;
 mod tray;
 mod ui;
 mod update;
