@@ -819,8 +819,10 @@ impl eframe::App for VoiceApp {
             crate::update::Status::Installed(tag) => Some(tag),
             _ => None,
         };
+        // Проверка теперь периодическая — новая версия может прийти посреди импорта звука:
+        // ждём, пока закроют диалог обрезки (кнопка «Перезапустить» — без ожидания).
         if let Some(tag) = installed
-            && (self.session.is_none() || self.restart_now)
+            && ((self.session.is_none() && self.soundpad.trim.is_none()) || self.restart_now)
         {
             self.disconnect();
             let _ = self.cfg.save();

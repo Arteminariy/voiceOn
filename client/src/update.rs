@@ -232,3 +232,26 @@ pub fn restart(tag: &str, hidden: bool) -> ! {
     }
     std::process::exit(0);
 }
+
+#[cfg(test)]
+mod tests {
+    /// Живой запрос к GitHub всеми вариантами TLS (не в обычном прогоне — нужна сеть).
+    /// Под wine: `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine cargo test -p voiceon
+    /// --target x86_64-pc-windows-gnu -- --ignored tls_agents_reach_github --nocapture`.
+    #[test]
+    #[ignore]
+    fn tls_agents_reach_github() {
+        let api = format!("https://api.github.com/repos/{}/releases/latest", super::REPO);
+        let mut ok = 0;
+        for (name, agent) in super::agents() {
+            match super::get(&agent, &api, 1024 * 1024) {
+                Ok(b) => {
+                    println!("{name}: ok, {} байт", b.len());
+                    ok += 1;
+                }
+                Err(e) => println!("{name}: {e}"),
+            }
+        }
+        assert!(ok > 0);
+    }
+}

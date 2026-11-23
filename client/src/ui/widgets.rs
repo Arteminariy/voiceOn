@@ -109,7 +109,7 @@ pub fn menu_item(ui: &mut Ui, icon: &str, text: &str, color: Color32) -> Respons
     let mut job = egui::text::LayoutJob::default();
     job.append(icon, 0.0, egui::TextFormat::simple(theme::icon_font(16.0), color));
     job.append(text, 8.0, egui::TextFormat::simple(egui::FontId::proportional(14.0), color));
-    ui.add(egui::Button::new(job).frame(false))
+    ui.add(egui::Button::new(job))
 }
 
 /// Большая кнопка основного действия.
