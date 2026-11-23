@@ -61,6 +61,57 @@ pub fn icon_button(ui: &mut Ui, icon: &str, size: f32, color: Color32, tip: &str
     resp.on_hover_text(tip)
 }
 
+/// Как выглядит квадратная кнопка-иконка.
+#[derive(Clone, Copy)]
+pub enum Tone {
+    /// Обычная: фон кнопки, рамка поля ввода.
+    Plain,
+    /// Основное действие: акцентная заливка.
+    Accent,
+    /// Остановить: приглушённо-красная заливка.
+    Danger,
+}
+
+/// Квадратная кнопка-иконка со скруглением 8 (диалоги, «стоп» в саундпаде).
+/// Подсказка обязательна: подписи у кнопки нет.
+pub fn square_button(ui: &mut Ui, icon: &str, size: f32, tone: Tone, enabled: bool, tip: &str, pal: &Palette) -> Response {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), sense);
+    let (fill, fg, stroke) = match tone {
+        Tone::Plain => (pal.round_btn, pal.text, Some(pal.border_input)),
+        Tone::Accent => (pal.accent, pal.on_accent, None),
+        Tone::Danger => (pal.round_btn_muted, pal.danger, None),
+    };
+    let fill = if !enabled {
+        fill.gamma_multiply(0.5)
+    } else if resp.is_pointer_button_down_on() {
+        fill.gamma_multiply(0.8)
+    } else if resp.hovered() {
+        lighten(fill)
+    } else {
+        fill
+    };
+    let fg = if enabled { fg } else { pal.dim };
+    let r = CornerRadius::same(8);
+    ui.painter().rect_filled(rect, r, fill);
+    if let Some(s) = stroke {
+        ui.painter().rect_stroke(rect, r, Stroke::new(1.0, s), StrokeKind::Inside);
+    }
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, icon, theme::icon_font(size * 0.56), fg);
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(if enabled { egui::CursorIcon::PointingHand } else { egui::CursorIcon::NotAllowed });
+    }
+    resp.on_hover_text(tip)
+}
+
+/// Пункт меню: иконка и подпись (разные шрифты в одной строке).
+pub fn menu_item(ui: &mut Ui, icon: &str, text: &str, color: Color32) -> Response {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(icon, 0.0, egui::TextFormat::simple(theme::icon_font(16.0), color));
+    job.append(text, 8.0, egui::TextFormat::simple(egui::FontId::proportional(14.0), color));
+    ui.add(egui::Button::new(job).frame(false))
+}
+
 /// Большая кнопка основного действия.
 pub fn primary_button(ui: &mut Ui, icon: &str, text: &str, pal: &Palette) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 48.0), Sense::click());

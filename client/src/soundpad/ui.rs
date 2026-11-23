@@ -7,11 +7,14 @@ use egui_phosphor::regular as ph;
 
 use crate::config::Config;
 use crate::session::Session;
-use crate::soundpad::{SLOT_COUNT, Soundpad, TrimState, import};
+use crate::soundpad::{PREVIEW_SLOT, SLOT_COUNT, Soundpad, TrimState, import};
 use crate::ui::theme::{Palette, semibold};
-use crate::ui::widgets;
+use crate::ui::widgets::{self, Tone};
 
 const SLOT_SIZE: f32 = 56.0;
+const STOP_SIZE: f32 = 28.0;
+/// Кнопки диалога обрезки.
+const DLG_BTN: f32 = 32.0;
 
 /// Действие по слоту, собранное за кадр (применяется после отрисовки кнопок).
 enum Act {
@@ -29,13 +32,13 @@ pub fn drawer(ui: &mut Ui, pad: &mut Soundpad, session: Option<&Session>, cfg: &
     ui.horizontal(|ui| {
         ui.label(RichText::new("САУНДПАД").size(12.0).font(semibold(12.0)).color(p.muted));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let stop = egui::Button::new(RichText::new("Стоп").size(12.0).color(p.danger));
-            if ui.add(stop)
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Остановить все звуки")
-                .clicked()
-            {
-                pad.stop_all(session.map(|s| s.shared.as_ref()));
+            // «Стоп» — только пока что-то играет; место под него держим, чтобы слайдер не прыгал.
+            if pad.any_active(session.map(|s| s.shared.as_ref())) {
+                if widgets::square_button(ui, ph::STOP, STOP_SIZE, Tone::Danger, true, "Остановить все звуки", p).clicked() {
+                    pad.stop_all(session.map(|s| s.shared.as_ref()));
+                }
+            } else {
+                ui.allocate_exact_size(vec2(STOP_SIZE, STOP_SIZE), Sense::hover());
             }
             let mut v = cfg.soundpad.volume;
             if widgets::volume_slider(ui, 120.0, &mut v, p) {
@@ -66,11 +69,11 @@ pub fn drawer(ui: &mut Ui, pad: &mut Soundpad, session: Option<&Session>, cfg: &
                     action = Some(Act::Play(i));
                 }
                 resp.context_menu(|ui| {
-                    if ui.button("Заменить…").clicked() {
+                    if widgets::menu_item(ui, ph::SWAP, "Заменить…", p.text).clicked() {
                         action = Some(Act::Replace(i));
                         ui.close();
                     }
-                    if ui.button("Удалить").clicked() {
+                    if widgets::menu_item(ui, ph::TRASH, "Удалить", p.err_text).clicked() {
                         action = Some(Act::Remove(i));
                         ui.close();
                     }
@@ -207,12 +210,14 @@ enum Dlg {
     None,
     Cancel,
     Preview(usize, usize),
+    StopPreview,
     Add,
 }
 
 /// Модальный диалог обрезки: волна, ручки начала/конца, прослушивание, «Добавить».
 /// При `deaf` (в звонке с выключенным звуком) прослушивание заблокировано.
 pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, deaf: bool) {
+    let previewing = pad.preview_active();
     let Some(trim) = &mut pad.trim else { return };
 
     // Ответ фонового декода.
@@ -268,7 +273,7 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, de
                     ui.label(RichText::new(e).color(p.err_text));
                 }
                 ui.add_space(6.0);
-                if ui.button("Закрыть").clicked() {
+                if widgets::square_button(ui, ph::X, DLG_BTN, Tone::Plain, true, "Закрыть", &p).clicked() {
                     action = Dlg::Cancel;
                 }
                 return;
@@ -294,20 +299,28 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, de
             }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(!deaf, egui::Button::new("Прослушать"))
-                    .on_hover_text(if deaf { "Включи звук, чтобы слушать" } else { "" })
-                    .clicked()
-                {
-                    let s = (trim.start * SAMPLE_RATE as f32) as usize;
-                    let e = (trim.end * SAMPLE_RATE as f32) as usize;
-                    action = Dlg::Preview(s, e);
+                ui.spacing_mut().item_spacing.x = 8.0;
+                // Одна кнопка: играет — останавливает, тишина — запускает заново (без наложения).
+                if previewing {
+                    if widgets::square_button(ui, ph::STOP, DLG_BTN, Tone::Danger, true, "Остановить прослушивание", &p).clicked() {
+                        action = Dlg::StopPreview;
+                    }
+                } else {
+                    let tip = if deaf { "Включи звук, чтобы слушать" } else { "Прослушать" };
+                    if widgets::square_button(ui, ph::PLAY, DLG_BTN, Tone::Plain, !deaf, tip, &p).clicked() {
+                        let s = (trim.start * SAMPLE_RATE as f32) as usize;
+                        let e = (trim.end * SAMPLE_RATE as f32) as usize;
+                        action = Dlg::Preview(s, e);
+                    }
                 }
-                if ui.button("Отмена").clicked() {
-                    action = Dlg::Cancel;
-                }
-                if ui.button(RichText::new("Добавить").color(p.accent)).clicked() {
-                    action = Dlg::Add;
-                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::square_button(ui, ph::CHECK, DLG_BTN, Tone::Accent, true, "Добавить", &p).clicked() {
+                        action = Dlg::Add;
+                    }
+                    if widgets::square_button(ui, ph::X, DLG_BTN, Tone::Plain, true, "Отмена", &p).clicked() {
+                        action = Dlg::Cancel;
+                    }
+                });
             });
             ui.add_space(2.0);
         });
@@ -329,15 +342,17 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, de
                 }
                 let local = pad.local.as_ref().unwrap();
                 local.pad.set_gain(cfg.soundpad.volume);
-                local.pad.play(usize::MAX, clip); // предпрослушивание — вне нумерации слотов
+                local.pad.stop_slot(PREVIEW_SLOT); // не накладываем на прошлое прослушивание
+                local.pad.play(PREVIEW_SLOT, clip);
             }
         }
+        Dlg::StopPreview => pad.stop_preview(),
         Dlg::Add => {
             if let Some(dir) = import::sounds_dir() {
                 let trim = pad.trim.as_ref().unwrap();
                 let (slot, name) = (trim.target_slot, trim.name.clone());
                 match pad.import_into(cfg, &dir, slot, name) {
-                    Ok(()) => pad.trim = None,
+                    Ok(()) => pad.close_trim(),
                     Err(e) => {
                         if let Some(trim) = &mut pad.trim {
                             trim.error = Some(e);
@@ -346,11 +361,11 @@ pub fn trim_dialog(ctx: &egui::Context, pad: &mut Soundpad, cfg: &mut Config, de
                 }
             }
         }
-        Dlg::Cancel => pad.trim = None,
+        Dlg::Cancel => pad.close_trim(),
         Dlg::None => {}
     }
     if !open {
-        pad.trim = None;
+        pad.close_trim();
     }
 }
 

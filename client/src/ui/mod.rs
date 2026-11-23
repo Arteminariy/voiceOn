@@ -52,7 +52,9 @@ pub struct VoiceApp {
     screen: Screen,
     /// Затухающий пик вероятности речи на полосе VAD.
     vad_peak: f32,
-    update: crate::update::Shared,
+    update: crate::update::Updater,
+    /// «Перезапустить сейчас» в настройках: обновиться, даже если идёт звонок.
+    restart_now: bool,
     tray: Option<crate::tray::Tray>,
     /// Панель с треем на месте (Linux: StatusNotifierWatcher); с какого момента её нет.
     tray_lost: Option<Instant>,
@@ -108,6 +110,7 @@ impl VoiceApp {
             screen: Screen::Main,
             vad_peak: 0.0,
             update,
+            restart_now: false,
             // Без трея спрятанное окно не вернуть — тогда стартуем как обычно.
             hide_on_start: launch.start_hidden && tray.is_some(),
             tray,
@@ -255,14 +258,6 @@ impl VoiceApp {
         egui::Panel::bottom("login_footer").show_separator_line(false).frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(0, 10))).show(ui, |ui| {
             ui.vertical_centered(|ui| version_label(ui, &p, "v", &self.update));
         });
-        if Soundpad::enabled(&self.cfg) && self.soundpad.drawer_open {
-            egui::Panel::bottom("soundpad_drawer")
-                .show_separator_line(true)
-                .frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(16, 10)))
-                .show(ui, |ui| {
-                    crate::soundpad::ui::drawer(ui, &mut self.soundpad, None, &mut self.cfg, &p);
-                });
-        }
         egui::CentralPanel::default().frame(Frame::NONE.fill(p.bg).inner_margin(Margin::symmetric(24, 16))).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 16.0;
@@ -281,6 +276,18 @@ impl VoiceApp {
                         }
                     });
                 });
+                // Саундпад раскрывается прямо под кнопкой, которая его открывает.
+                if Soundpad::enabled(&self.cfg) && self.soundpad.drawer_open {
+                    Frame::NONE
+                        .fill(p.surface)
+                        .stroke(Stroke::new(1.0, p.border))
+                        .corner_radius(CornerRadius::same(12))
+                        .inner_margin(Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            crate::soundpad::ui::drawer(ui, &mut self.soundpad, None, &mut self.cfg, &p);
+                        });
+                }
                 ui.add_space(6.0);
                 labelled(ui, &p, "Сервер", |ui| {
                     ui.add(input(&mut self.cfg.server).hint_text("host:порт"));
@@ -592,7 +599,7 @@ impl VoiceApp {
                                 crate::log::info(&format!("модуль {}: {on}", self.soundpad.id()));
                                 if !on {
                                     self.soundpad.drawer_open = false;
-                                    self.soundpad.trim = None;
+                                    self.soundpad.close_trim();
                                     self.soundpad.stop_all(self.session.as_ref().map(|s| s.shared.as_ref()));
                                 }
                                 let _ = self.cfg.save();
@@ -629,11 +636,59 @@ impl VoiceApp {
                 if let Some(e) = self.autostart_error.clone() {
                     error_box(ui, &p, &format!("Автозапуск: {e}"));
                 }
+
+                self.update_card(ui, &p, in_call);
             });
         });
         if back {
             self.screen = Screen::Main;
         }
+    }
+}
+
+impl VoiceApp {
+    /// Карточка «Обновления»: статус и ручная проверка.
+    fn update_card(&mut self, ui: &mut Ui, p: &Palette, in_call: bool) {
+        use crate::update::Status;
+        use widgets::Tone;
+        let status = self.update.status();
+        let (line, color) = match &status {
+            Status::Checking => ("проверяю…".to_string(), p.dim),
+            Status::UpToDate => ("последняя версия".to_string(), p.dim),
+            Status::Downloading(v) => (format!("загружаю {v}…"), p.dim),
+            Status::Installed(v) if in_call => (format!("{v} установится после звонка"), p.accent),
+            Status::Installed(v) => (format!("перезапускаюсь в {v}…"), p.accent),
+            // Полный текст (с адресом) — в подсказке и журнале, здесь только причина.
+            Status::Failed(e) => (format!("не удалось: {}", e.rsplit(": ").next().unwrap_or(e)), p.err_text),
+        };
+        Frame::NONE.fill(p.surface).corner_radius(CornerRadius::same(10)).inner_margin(Margin::same(12)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let btn = 32.0;
+                let w = (ui.available_width() - btn - ui.spacing().item_spacing.x).max(40.0);
+                ui.vertical(|ui| {
+                    ui.set_width(w);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(RichText::new("Обновления").size(14.0).color(p.text));
+                    let text = format!("v{} · {line}", env!("CARGO_PKG_VERSION"));
+                    let r = ui.add(egui::Label::new(RichText::new(&text).size(12.0).color(color)).truncate());
+                    if let Status::Failed(e) = &status {
+                        r.on_hover_text(e);
+                    }
+                });
+                if let Status::Installed(_) = status {
+                    let tip = if in_call { "Перезапустить сейчас (звонок прервётся)" } else { "Перезапустить" };
+                    if widgets::square_button(ui, ph::DOWNLOAD_SIMPLE, btn, Tone::Accent, true, tip, p).clicked() {
+                        self.restart_now = true;
+                    }
+                } else {
+                    let busy = self.update.busy();
+                    let tip = if busy { "Уже проверяю" } else { "Проверить обновления" };
+                    if widgets::square_button(ui, ph::ARROWS_CLOCKWISE, btn, Tone::Plain, !busy, tip, p).clicked() {
+                        self.update.check_now();
+                    }
+                }
+            });
+        });
     }
 }
 
@@ -653,11 +708,12 @@ fn labelled(ui: &mut Ui, p: &Palette, label: &str, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-fn version_label(ui: &mut Ui, p: &Palette, prefix: &str, update: &crate::update::Shared) {
+fn version_label(ui: &mut Ui, p: &Palette, prefix: &str, update: &crate::update::Updater) {
     use crate::update::Status;
-    let extra = match &*update.lock().unwrap() {
+    let extra = match &update.status() {
         Status::Downloading(v) => format!(" · загружаю {v}…"),
         Status::Installed(v) => format!(" · {v} установится после звонка"),
+        Status::Failed(_) => " · обновление не удалось".into(),
         _ => String::new(),
     };
     ui.label(RichText::new(format!("{prefix}{}{extra}", env!("CARGO_PKG_VERSION"))).size(12.0).color(p.dim));
@@ -759,11 +815,14 @@ impl eframe::App for VoiceApp {
             self.hide(ctx);
         }
         // Новая версия уже на месте бинарника — перезапускаемся, когда нет звонка.
-        let installed = match &*self.update.lock().unwrap() {
-            crate::update::Status::Installed(tag) => Some(tag.clone()),
+        let installed = match self.update.status() {
+            crate::update::Status::Installed(tag) => Some(tag),
             _ => None,
         };
-        if let (Some(tag), None) = (installed, &self.session) {
+        if let Some(tag) = installed
+            && (self.session.is_none() || self.restart_now)
+        {
+            self.disconnect();
             let _ = self.cfg.save();
             self.tray = None; // убрать значок до выхода
             crate::update::restart(&tag, self.hidden);

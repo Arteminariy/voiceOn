@@ -62,6 +62,9 @@ impl LocalPad {
                         std::thread::sleep(Duration::from_millis(3));
                         continue;
                     }
+                    // `Pad::play` кладёт инстанс и в очередь эфира; здесь эфира нет —
+                    // сливаем её вхолостую, иначе инстансы висят вечно (подсветка, «стоп»).
+                    pad2.mix_tx(&mut frame, true);
                     frame.fill(0.0);
                     pad2.mix_monitor(&mut frame, false);
                     if pad2.any_active() {

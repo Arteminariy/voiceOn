@@ -4,8 +4,13 @@
 //! подпись ed25519, проверяем подпись встроенным публичным ключом, качаем
 //! бинарник своей платформы, сверяем sha256 и подменяем им себя. Пока идёт
 //! звонок, ничего не перезапускаем: UI перезапустит приложение, когда звонка нет.
+//!
+//! Приложение живёт в трее днями (автозапуск), поэтому проверка повторяется раз в
+//! несколько часов, а после ошибки — скоро (на старте с системой сети часто ещё нет).
+//! Кнопка в настройках будит проверку сразу.
 
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -13,6 +18,11 @@ pub(crate) use voiceon_core::release::parse_version;
 use voiceon_core::release::{REPO, check_hash, verified_hash};
 
 const MAX_BINARY: u64 = 64 * 1024 * 1024;
+/// Как часто проверять, если всё в порядке.
+const RECHECK: Duration = Duration::from_secs(4 * 3600);
+/// Паузы перед повтором после ошибки: 1, 5, 15, дальше раз в 30 минут.
+const RETRY: [Duration; 4] =
+    [Duration::from_secs(60), Duration::from_secs(300), Duration::from_secs(900), Duration::from_secs(1800)];
 
 #[cfg(windows)]
 const ASSET: &str = "voiceon-windows-x86_64.exe";
@@ -29,7 +39,29 @@ pub enum Status {
     Failed(String),
 }
 
-pub type Shared = Arc<Mutex<Status>>;
+/// Фоновый проверяльщик: статус для UI и «проверь сейчас».
+pub struct Updater {
+    status: Arc<Mutex<Status>>,
+    wake: mpsc::Sender<()>,
+}
+
+impl Updater {
+    pub fn status(&self) -> Status {
+        self.status.lock().unwrap().clone()
+    }
+
+    /// Идёт проверка или загрузка — кнопку «проверить» не даём.
+    pub fn busy(&self) -> bool {
+        matches!(self.status(), Status::Checking | Status::Downloading(_))
+    }
+
+    /// Проверить сейчас, не дожидаясь следующей плановой проверки.
+    pub fn check_now(&self) {
+        if !self.busy() {
+            let _ = self.wake.send(());
+        }
+    }
+}
 
 /// Путь к себе, запомненный до подмены: после неё на Linux `current_exe()`
 /// указывает на удалённый файл (`… (deleted)`).
@@ -44,9 +76,10 @@ pub fn current_version() -> &'static str {
 }
 
 /// Запускает проверку в фоне. `on_change` вызывается при смене статуса (перерисовка UI).
-pub fn spawn(on_change: impl Fn() + Send + 'static) -> Shared {
+pub fn spawn(on_change: impl Fn() + Send + 'static) -> Updater {
     exe_path();
-    let status: Shared = Arc::new(Mutex::new(Status::Checking));
+    let status = Arc::new(Mutex::new(Status::Checking));
+    let (wake, rx) = mpsc::channel();
     let st = status.clone();
     let _ = std::thread::Builder::new().name("voiceon-update".into()).spawn(move || {
         let set = |s: Status| {
@@ -58,21 +91,62 @@ pub fn spawn(on_change: impl Fn() + Send + 'static) -> Shared {
             set(Status::UpToDate);
             return;
         }
-        match check_and_install(&set) {
-            Ok(None) => set(Status::UpToDate),
-            Ok(Some(v)) => set(Status::Installed(v)),
-            Err(e) => set(Status::Failed(e)),
+        let mut failures = 0usize;
+        loop {
+            set(Status::Checking);
+            let pause = match check_and_install(&set) {
+                Ok(None) => {
+                    failures = 0;
+                    set(Status::UpToDate);
+                    RECHECK
+                }
+                Ok(Some(v)) => {
+                    set(Status::Installed(v));
+                    return; // дальше — перезапуск
+                }
+                Err(e) => {
+                    set(Status::Failed(e));
+                    failures += 1;
+                    RETRY[(failures - 1).min(RETRY.len() - 1)]
+                }
+            };
+            match rx.recv_timeout(pause) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+            while rx.try_recv().is_ok() {}
         }
     });
-    status
+    Updater { status, wake }
 }
 
-fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(120)))
-        .user_agent(format!("voiceon/{}", current_version()))
-        .build()
-        .new_agent()
+/// Без общего тайм-аута на весь запрос: на медленной сети бинарник качается дольше
+/// пары минут. Обрываем только зависшее соединение.
+fn agent(platform_roots: bool) -> ureq::Agent {
+    let cfg = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(20)))
+        .timeout_per_read(Some(Duration::from_secs(30)))
+        .timeout_per_call(Some(Duration::from_secs(15 * 60)))
+        .user_agent(format!("voiceon/{}", current_version()));
+    let cfg = if platform_roots {
+        use ureq::tls::{RootCerts, TlsConfig};
+        cfg.tls_config(TlsConfig::builder().root_certs(RootCerts::PlatformVerifier).build())
+    } else {
+        cfg
+    };
+    cfg.build().new_agent()
+}
+
+/// Варианты TLS по порядку. На Windows сначала сертификаты системы: антивирусы
+/// (Kaspersky, ESET) и корпоративные прокси подменяют сертификаты своим корнем,
+/// которого нет во встроенном списке; встроенный список — запасной путь.
+fn agents() -> Vec<(&'static str, ureq::Agent)> {
+    let mut v = Vec::new();
+    if cfg!(windows) {
+        v.push(("системные сертификаты", agent(true)));
+    }
+    v.push(("встроенные сертификаты", agent(false)));
+    v
 }
 
 fn get(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>, String> {
@@ -81,9 +155,25 @@ fn get(agent: &ureq::Agent, url: &str, limit: u64) -> Result<Vec<u8>, String> {
 }
 
 fn check_and_install(set: &dyn Fn(Status)) -> Result<Option<String>, String> {
-    let agent = agent();
     let api = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let body = get(&agent, &api, 1024 * 1024)?;
+    let mut errors = Vec::new();
+    let mut found = None;
+    for (name, agent) in agents() {
+        match get(&agent, &api, 1024 * 1024) {
+            Ok(body) => {
+                found = Some((agent, body));
+                break;
+            }
+            Err(e) => {
+                crate::log::info(&format!("обновление: {name}: {e}"));
+                errors.push(e);
+            }
+        }
+    }
+    let Some((agent, body)) = found else {
+        errors.dedup();
+        return Err(errors.join("; "));
+    };
     let json: serde_json::Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
     let tag = json["tag_name"].as_str().ok_or("в ответе GitHub нет tag_name")?.to_string();
 

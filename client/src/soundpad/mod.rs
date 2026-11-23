@@ -16,6 +16,8 @@ use crate::soundpad::preview::LocalPad;
 
 /// Слотов ровно столько — решение из спеки.
 pub const SLOT_COUNT: usize = 5;
+/// «Слот» предпрослушивания в диалоге обрезки — вне нумерации настоящих слотов.
+pub const PREVIEW_SLOT: usize = usize::MAX;
 
 pub struct Slot {
     pub name: String,
@@ -127,6 +129,28 @@ impl Soundpad {
         let local = self.local.as_ref().unwrap();
         local.pad.set_gain(cfg.soundpad.volume);
         local.pad.play(slot, s.samples.clone());
+    }
+
+    /// Играет ли что-нибудь: в звонке — эфир, плюс локальный проигрыватель (предпрослушивание).
+    pub fn any_active(&self, shared: Option<&Shared>) -> bool {
+        shared.is_some_and(|s| s.pad.any_active()) || self.local.as_ref().is_some_and(|l| l.pad.any_active())
+    }
+
+    /// Идёт ли предпрослушивание в диалоге обрезки.
+    pub fn preview_active(&self) -> bool {
+        self.local.as_ref().is_some_and(|l| l.pad.slot_active(PREVIEW_SLOT))
+    }
+
+    pub fn stop_preview(&self) {
+        if let Some(l) = &self.local {
+            l.pad.stop_slot(PREVIEW_SLOT);
+        }
+    }
+
+    /// Закрывает диалог обрезки (любым путём) и глушит его прослушивание.
+    pub fn close_trim(&mut self) {
+        self.stop_preview();
+        self.trim = None;
     }
 
     /// Глушит всё: очереди ядра (в звонке) и локальный проигрыватель.

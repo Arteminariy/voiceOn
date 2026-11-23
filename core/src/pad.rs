@@ -61,6 +61,13 @@ impl Pad {
         self.monitor.lock().unwrap().clear();
     }
 
+    /// Глушит только инстансы одного слота (например, предпрослушивание).
+    pub fn stop_slot(&self, slot: usize) {
+        for q in [&self.tx, &self.monitor] {
+            q.lock().unwrap().retain(|i| i.slot != slot);
+        }
+    }
+
     pub fn set_gain(&self, gain: f32) {
         self.gain.store(gain.to_bits(), Ordering::Relaxed);
     }
@@ -138,6 +145,16 @@ mod tests {
         pad.mix_monitor(&mut b, false);
         assert!(a[0] > 0.0);
         assert_eq!(a[0], b[0]);
+    }
+
+    #[test]
+    fn stop_slot_leaves_other_slots() {
+        let pad = Pad::new();
+        pad.play(0, clip(0.1, 960));
+        pad.play(7, clip(0.1, 960));
+        pad.stop_slot(7);
+        assert!(pad.slot_active(0));
+        assert!(!pad.slot_active(7));
     }
 
     #[test]
